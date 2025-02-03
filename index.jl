@@ -153,12 +153,12 @@ begin
 	
 	ad_rule = AutoZygote()
 
-	n_epochs = 1_000
+	n_epochs = 500
 	@time tstate, train_losses = main(tstate, ad_rule, (X_train, y_train), n_epochs)
 end
 
 # ╔═╡ bb6602f4-927e-473e-b8da-957395ed7617
-plot(25:n_epochs, train_losses[25:end], xlab="Epochs", ylab="MSE")
+plot(100:n_epochs, train_losses[100:end], xlab="Epochs", ylab="MSE", ylim(0.0, 0.20))
 
 # ╔═╡ bbb80aa6-096c-4fae-bc1d-2e2f5ba28b2d
 function predict(train_state, Xs)
