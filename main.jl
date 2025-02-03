@@ -9,7 +9,7 @@ begin
 	cd(".")
 	using Pkg
 	# Not registered
-	Pkg.add("https://github.com/patrickm663/HMD.jl")
+	Pkg.add(url="https://github.com/patrickm663/HMD.jl")
 	Pkg.activate(".")
 end
 
