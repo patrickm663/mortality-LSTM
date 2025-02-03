@@ -130,7 +130,7 @@ function get_data(; T=10, τ₀=3)
 	y_train = -y_[1, :] |> f32
 	y_valid = -y_[2, :] |> f32
 
-	return X_train, y_train, X_valid, y_valid, (X_min, X_max)
+	return X_train, reshape(y_train, 1, :), X_valid, reshape(y_valid, 1, :), (X_min, X_max)
 end
 
 # ╔═╡ 7b5558e7-30c8-4069-9175-6dd79d27c8f5
