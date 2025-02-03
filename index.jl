@@ -10,7 +10,7 @@ begin
 	using Pkg
 	# Not registered
 	Pkg.add(url="https://github.com/patrickm663/HMD.jl")
-	Pkg.instantiate(".")
+	Pkg.instantiate()
 	Pkg.activate(".")
 end
 
