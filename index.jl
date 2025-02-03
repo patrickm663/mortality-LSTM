@@ -196,13 +196,13 @@ mean((exp.(-y_train) .- exp.(y_pred_train)) .^ 2)
 
 # ╔═╡ c59ed9df-f944-4ee6-881e-2986dc8b1d3d
 begin
-	plot(1:97, vec(y_pred_valid), label="Predicted", width=2, title="Validation Set")
+	plot(1:97, vec(y_pred_valid'), label="Predicted", width=2, title="Validation Set")
 	scatter!(1:97, -vec(y_valid'), label="Observed")
 end
 
 # ╔═╡ 13601f30-29d5-40f3-a8c2-18b8a25a4070
 begin
-	plot(1:97, vec(y_pred_train), label="Predicted", width=2, title="Training Set")
+	plot(1:97, vec(y_pred_train'), label="Predicted", width=2, title="Training Set")
 	scatter!(1:97, -vec(y_train'), label="Observed")
 end
 
