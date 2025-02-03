@@ -165,7 +165,7 @@ end
 
 # ╔═╡ bb6602f4-927e-473e-b8da-957395ed7617
 begin
-plot(100:n_epochs, train_losses[100:end], xlab="Epochs", ylab="MSE", ylim(0.0, 0.20), label="Training")
+plot(100:n_epochs, train_losses[100:end], xlab="Epochs", ylab="MSE", ylim=(0.0, 0.20), label="Training")
 plot!(100:n_epochs, valid_losses[100:end], label="Validation")
 end
 
