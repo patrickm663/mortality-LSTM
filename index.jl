@@ -31,11 +31,8 @@ function LSTM1(in_dims, hidden_dims, out_dims)
     #end
 	return Chain(
 		Recurrence(GRUCell(in_dims => hidden_dims); return_sequence=true),
-		Recurrence(GRUCell(hidden_dims => hidden_dims); return_sequence=true), # T=10
-		Dense(10 => out_dims, exp)
-#Dense(hidden_dims => out_dims, exp)
-
-
+		Recurrence(GRUCell(hidden_dims => hidden_dims); return_sequence=true),
+		Dense(hidden_dims => out_dims, exp)
 	)
 end
 
