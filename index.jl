@@ -19,7 +19,7 @@ using ADTypes, Lux, Optimisers, Printf, Random, CSV, Plots, DataFrames, Componen
 
 # ╔═╡ 93779239-cd66-4be2-b70f-c7872a29a29f
 function LSTM1(in_dims, hidden_dims, out_dims)
-    lstm_cell = LSTMCell(in_dims => hidden_dims)
+    lstm_cell = RNNCell(in_dims => hidden_dims; activation=tanh)
     regressor = Dense(hidden_dims => out_dims, exp)
     return @compact(; lstm_cell, regressor) do x::AbstractArray{T, 3} where {T}
         x_init, x_rest = Iterators.peel(LuxOps.eachslice(x, Val(2)))
