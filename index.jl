@@ -133,14 +133,20 @@ X_train, y_train, X_valid, y_valid, min_max_scale = get_data()
 function main(tstate::Training.TrainState, vjp, data, epochs)
 	loss_function = MSELoss()
 	train_losses = []
+	valid_losses = []
     for epoch in 1:epochs
-        _, loss, _, tstate = Training.single_train_step!(vjp, loss_function, data, tstate)
-		push!(train_losses, loss)
+        _, train_loss, _, tstate = Training.single_train_step!(vjp, loss_function, data, tstate)
+		push!(train_losses, train_loss)
+		valid_pred = (Lux.apply(tstate.model, X_valid, tstate.parameters, tstate.states))[1]
+valid_loss = mean((y_valid .- valid_pred) .^ 2)
+push!(valid_losses, valid_loss)
+
+
         if epoch % 50 == 1 || epoch == epochs
-            @printf "Epoch: %3d \t Loss: %.5g\n" epoch loss
+            @printf "Epoch: %3d \t Train Loss: %.5g \t Valid Loss: %.5g \n" epoch train_loss valid_loss
         end
     end
-    return tstate, train_losses
+    return tstate, train_losses, valid_losses
 end
 
 # ╔═╡ b7d6736b-776e-49d1-ae18-4a64b07a1a24
@@ -154,11 +160,14 @@ begin
 	ad_rule = AutoZygote()
 
 	n_epochs = 500
-	@time tstate, train_losses = main(tstate, ad_rule, (X_train, y_train), n_epochs)
+	@time tstate, train_losses, valid_losses = main(tstate, ad_rule, (X_train, y_train), n_epochs)
 end
 
 # ╔═╡ bb6602f4-927e-473e-b8da-957395ed7617
-plot(100:n_epochs, train_losses[100:end], xlab="Epochs", ylab="MSE", ylim(0.0, 0.20))
+begin
+plot(100:n_epochs, train_losses[100:end], xlab="Epochs", ylab="MSE", ylim(0.0, 0.20), label="Training")
+plot!(100:n_epochs, valid_losses[100:end], label="Validation")
+end
 
 # ╔═╡ bbb80aa6-096c-4fae-bc1d-2e2f5ba28b2d
 function predict(train_state, Xs)
