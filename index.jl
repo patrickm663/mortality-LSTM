@@ -31,7 +31,7 @@ function LSTM1(in_dims, hidden_dims, out_dims)
     #end
 	return Chain(
 		Recurrence(
-			LSTMCell(in_dims => hidden_dims);
+			GRUCell(in_dims => hidden_dims);
 			return_sequence=false
 			),
 		Dense(hidden_dims => out_dims, exp)
@@ -166,7 +166,7 @@ begin
 	
 	ad_rule = AutoZygote()
 
-	n_epochs = 500
+	n_epochs = 1_000
 	@time tstate, train_losses, valid_losses = main(tstate, ad_rule, (X_train, y_train), n_epochs)
 end
 
@@ -196,13 +196,13 @@ mean((exp.(-y_train) .- exp.(y_pred_train)) .^ 2)
 
 # ╔═╡ c59ed9df-f944-4ee6-881e-2986dc8b1d3d
 begin
-	plot(1:97, vec(y_pred_valid'), label="Predicted", width=2, title="Validation Set")
+	plot(1:97, vec(y_pred_valid), label="Predicted", width=2, title="Validation Set")
 	scatter!(1:97, -vec(y_valid'), label="Observed")
 end
 
 # ╔═╡ 13601f30-29d5-40f3-a8c2-18b8a25a4070
 begin
-	plot(1:97, vec(y_pred_train'), label="Predicted", width=2, title="Training Set")
+	plot(1:97, vec(y_pred_train), label="Predicted", width=2, title="Training Set")
 	scatter!(1:97, -vec(y_train'), label="Observed")
 end
 
