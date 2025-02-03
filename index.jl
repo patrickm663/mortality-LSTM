@@ -30,8 +30,8 @@ function LSTM1(in_dims, hidden_dims, out_dims)
     #    @return vec(regressor(y))
     #end
 	return Chain(
-		Recurrence(LSTMCell(in_dims => hidden_dims); return_sequence=true),
-		Recurrence(LSTMCell(hidden_dims => hidden_dims); return_sequence=false),
+		Recurrence(GRUCell(in_dims => hidden_dims); return_sequence=true),
+		Recurrence(GRUCell(hidden_dims => hidden_dims); return_sequence=false),
 		Dense(hidden_dims => out_dims, exp)
 	)
 end
