@@ -11,7 +11,7 @@ begin
 	# Not registered
 	Pkg.add(url="https://github.com/patrickm663/HMD.jl")
 	Pkg.instantiate()
-	Pkg.add(["Lux", "ADTypes", "Zygote", "Optimisers", "Plots", "ComponentArrays", "MLUtils"])
+	Pkg.add(["CSV", "DataFrames", "Lux", "ADTypes", "Zygote", "Optimisers", "Plots", "ComponentArrays", "MLUtils"])
 end
 
 # ╔═╡ ef51c95e-d5ad-455a-9631-094823b695bb
