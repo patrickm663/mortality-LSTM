@@ -117,7 +117,7 @@ function get_data(; T=10, τ₀=3)
 
 	min_max(x, xmin, xmax) = 2*(x - xmin) / (xmax - xmin) - 1
 	X_train = min_max.(X_[1, :, :, :], X_min, X_max) |> f32
-	X_valid = min_max.(X_[1, :, :, :], X_min, X_max) |> f32
+	X_valid = min_max.(X_[2, :, :, :], X_min, X_max) |> f32
 
 	# Negative log mortality so outputs are positive
 	y_train = -y_[1, :] |> f32
