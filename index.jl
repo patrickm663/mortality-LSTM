@@ -96,7 +96,7 @@ function get_data(country; T=10, τ₀=3, start_year=1990, end_year=2001, LSTM_f
 
 	# Split out females, aged 0-98, years start_year-end_year
 	start_year = max(start_year, minimum(data.Year))
-	end_year = min(end_year, maximum(data.Year))
+	end_year = min(end_year, maximum(data.Year)) |> f32
 
 	@show start_year, end_year
 	
@@ -174,7 +174,7 @@ function get_data(country; T=10, τ₀=3, start_year=1990, end_year=2001, LSTM_f
 		valid = Matrix(valid) |> f32
 
 		# Recreate the validation set but using all ages to test interpolation
-		X_test = hcat(repeat([2001.0], 99), 0:98) |> f32
+		X_test = hcat(repeat([end_year * 1.0], 99), 0:98) |> f32
 
 		X_train = train[:, 1:2]
 		X_valid = valid[:, 1:2]
