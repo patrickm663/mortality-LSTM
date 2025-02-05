@@ -167,8 +167,8 @@ function get_data(country; T=10, τ₀=3, start_year=1990, end_year=2001, LSTM_f
 		# But retain it for a final X test set
 		data = data[data.Female .> 0, :]
 		
-		train = data[data.Year .< 2001, :]
-		valid = data[data.Year .≥ 2001, :]
+		train = data[data.Year .< end_year, :]
+		valid = data[data.Year .≥ end_year, :]
 
 		train = Matrix(train) |> f32
 		valid = Matrix(valid) |> f32
