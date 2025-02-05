@@ -19,18 +19,18 @@ using ADTypes, Lux, Optimisers, Printf, Random, CSV, Plots, DataFrames, Componen
 
 # ╔═╡ 50b3b576-d941-4609-8469-6de51cfa1545
 begin
-	start_year = 1970
+	start_year = 1990
 	end_year = 2001
 	forecast_year = 2019
 	extended_forecast_year = 2035
-	τ₀ = 5
+	τ₀ = 1
 	τ₁ = 8
-	T = 15
+	T = 10
 	NN_depth = 4
 	cell = GRUCell #LSTMCell
 	act = tanh
 	list_of_countries = HMD.get_countries()
-	country = list_of_countries["Netherlands"]
+	country = list_of_countries["Japan"]
 	lr = 0.05
 	opt = Adam(lr)#NAdam(lr)
 	model_type = "LSTM"
