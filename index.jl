@@ -34,7 +34,7 @@ begin
 	cell = GRUCell #LSTMCell
 	act = tanh
 	list_of_countries = HMD.get_countries()
-	country = list_of_countries["Japan"]
+	country = list_of_countries["Luxembourg"]
 	lr = 0.05
 	opt = Adam(lr)#NAdam(lr)
 	model_type = "LSTM"
@@ -404,7 +404,7 @@ begin
 
 	BNN_model = StatefulLuxLayer{true}(BNN_arch, nothing, st_BNN)
 
-	N_samples = 1_000
+	N_samples = 1_500
 
 	BNN_inference = bayes_nn(X_train, vec(y_train), BNN_model, ps_BNN, sig, n_params)
 	ad = AutoTracker()
@@ -413,7 +413,7 @@ begin
 end
 
 # ╔═╡ a18df247-d38f-4def-b56f-7b025ca57e2f
-StatsPlots.plot(chains[:, 1:25:end, :])
+StatsPlots.plot(chains[10:end, 1:25:end, :])
 
 # ╔═╡ ef5320bf-0b65-45da-9a9b-7c52dca56733
 describe(chains)
@@ -438,7 +438,7 @@ end
 
 # ╔═╡ 06de1912-a662-4988-8f95-a78322757f2f
 function predict(m, xs, θs, p_) 
-	return -vec(Lux.apply(m, xs, vector_to_parameters(θs, ps_BNN) |> f32))
+	return vec(Lux.apply(m, xs, vector_to_parameters(θs, ps_BNN) |> f32))
 end
 
 # ╔═╡ c1ca74d8-8c90-427b-8bf2-41ab1d13bcf3
@@ -500,7 +500,7 @@ begin
 		
 		for i ∈ 10:N_samples
 			sample_pred = predict(BNN_model, X_valid, θ[i, :], ps_BNN)
-			plot!(start_age:end_age, vec(sample_pred), label="", width=0.05, alpha=0.5, color=:gray)
+			plot!(start_age:end_age, vec(sample_pred), label="", width=0.05, alpha=0.5, color=:red)
 		end
 		MAP_pred = predict(BNN_model, X_valid, θ_MAP, ps_BNN)
 		plot!(start_age:end_age, vec(y_pred_valid), label="Predicted: $(opt)", width=2, color=:blue)
@@ -516,7 +516,7 @@ if model_type ≠ "NN"
 	plot(title="Forecast (Year $forecast_year_): $(country)\n τ₀=$τ₀, τ₁=$τ₁, T=$T, cell=$cell, depth=$NN_depth", xlab="Year", ylab="log μ", legend=:bottomright)
 	for i ∈ 1:N_samples
 		sample_forecast = predict(BNN_model, X_valid, θ[i, :], ps_BNN, (extended_forecast_year-end_year+1), x_1, x_2, min_max)
-		plot!(start_age:end_age, vec(sample_forecast[forecast_year_-end_year+1, :]'), label="", width=0.05, alpha=0.5, color=:gray)
+		plot!(start_age:end_age, vec(sample_forecast[forecast_year_-end_year+1, :]'), label="", width=0.05, alpha=0.5, color=:red)
 	end
 	MAP_forecast = predict(BNN_model, X_valid, θ_MAP, ps_BNN, (extended_forecast_year-end_year+1), x_1, x_2, min_max)
 	plot!(start_age:end_age, vec(forecast[forecast_year_-end_year+1, :]'), label="Forecast: $opt", color=:blue, width=2)
@@ -535,7 +535,7 @@ if model_type ≠ "NN"
 		plot(title="Forecast (Age $forecast_age): $(country)\n τ₀=$τ₀, τ₁=$τ₁, T=$T, cell=$cell, depth=$NN_depth", xlab="Year", ylab="log μ", legend=:topright)
 		for i ∈ 1:N_samples
 			sample_forecast = predict(BNN_model, X_valid, θ[i, :], ps_BNN, (extended_forecast_year-end_year+1), x_1, x_2, min_max)
-			plot!(end_year:extended_forecast_year, sample_forecast[:, forecast_age+1], label="", width=0.05, alpha=0.5, color=:gray)
+			plot!(end_year:extended_forecast_year, sample_forecast[:, forecast_age+1], label="", width=0.05, alpha=0.5, color=:red)
 		end
 		MAP_forecast2 = predict(BNN_model, X_valid, θ_MAP, ps_BNN, (extended_forecast_year-end_year+1), x_1, x_2, min_max)
 		plot!(end_year:extended_forecast_year, forecast[:, adj_forecast_age], label="Forecast: $opt", color=:blue, width=2)
