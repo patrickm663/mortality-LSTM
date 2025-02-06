@@ -11,11 +11,15 @@ begin
 	cd(".")
 	Pkg.activate(".")
 	Pkg.add(url="https://github.com/patrickm663/HMD.jl")
-	Pkg.add(["CSV", "DataFrames", "Lux", "ADTypes", "Zygote", "Optimisers", "Plots", "ComponentArrays", "Distributions", "Functors", "Tracker", "Turing"])
+	Pkg.add(name="Turing", version="0.34.1")
+	Pkg.add(["CSV", "DataFrames", "Lux", "ADTypes", "Zygote", "Optimisers", "Plots", "ComponentArrays", "Distributions", "Functors", "Tracker", "StatsPlots"])
 end
 
 # ╔═╡ ef51c95e-d5ad-455a-9631-094823b695bb
-using ADTypes, Lux, Optimisers, Printf, Random, CSV, Plots, DataFrames, ComponentArrays, HMD, Zygote, Statistics, Distributions, Functors, Turing, Tracker
+using ADTypes, Lux, Optimisers, Printf, Random, CSV, Plots, DataFrames, ComponentArrays, HMD, Zygote, Statistics, Distributions, Functors, Turing, Tracker, LinearAlgebra, StatsPlots
+
+# ╔═╡ f6696102-2894-4d54-be66-32004ea6486d
+Turing.setprogress!(true);
 
 # ╔═╡ 50b3b576-d941-4609-8469-6de51cfa1545
 begin
@@ -26,7 +30,7 @@ begin
 	τ₀ = 1
 	τ₁ = 8
 	T = 10
-	NN_depth = 4
+	NN_depth = 1
 	cell = GRUCell #LSTMCell
 	act = tanh
 	list_of_countries = HMD.get_countries()
@@ -56,26 +60,26 @@ function LSTM(in_dims, hidden_dims, out_dims; depth=1, cell=LSTMCell)
 	if depth == 1
 		return Chain(
 			Recurrence(cell(in_dims => hidden_dims); return_sequence=false),
-			Dense(hidden_dims => out_dims, exp)
+			Dense(hidden_dims => out_dims, identity)
 		)
 	elseif depth == 2
 		return Chain(
 			Recurrence(cell(in_dims => hidden_dims); return_sequence=true),
 			Recurrence(cell(hidden_dims => hidden_dims); return_sequence=false),
-			Dense(hidden_dims => out_dims, exp)
+			Dense(hidden_dims => out_dims, identity)
 		)
 	elseif depth > 2
 		return Chain(
 			Recurrence(cell(in_dims => hidden_dims); return_sequence=true),
 			[Recurrence(cell(hidden_dims => hidden_dims); return_sequence=true) for _ in 1:(depth-2)],
 			Recurrence(cell(hidden_dims => hidden_dims); return_sequence=false),
-			Dense(hidden_dims => out_dims, exp)
+			Dense(hidden_dims => out_dims, identity)
 		)
 	end
 end
 
 # ╔═╡ 608363b0-5f75-45c8-8970-5170489a5eeb
-function FNN(in_dims, hidden_dims, out_dims; depth=2, act=tanh, outer_act=exp)
+function FNN(in_dims, hidden_dims, out_dims; depth=2, act=tanh, outer_act=identity)
 	@assert depth > 0
 	if depth == 1
 		return Chain(
@@ -165,8 +169,8 @@ function get_data(country; T=10, τ₀=3, start_year=1990, end_year=2001, LSTM_f
 		end
 	
 		# Negative log mortality so outputs are positive
-		y_train = -y_[1, :] |> f32
-		y_valid = -y_[2, :] |> f32
+		y_train = y_[1, :] |> f32
+		y_valid = y_[2, :] |> f32
 	
 		return X_train, reshape(y_train, 1, :), X_valid, reshape(y_valid, 1, :), X_1, X_2, y_test
 		
@@ -259,6 +263,9 @@ function main(tstate, vjp, data, epochs; early_stopping=true)
     return tstate, train_losses, valid_losses
 end
 
+# ╔═╡ 4f3ea277-b1b7-4cc6-a771-dd35d0c3c611
+
+
 # ╔═╡ b7d6736b-776e-49d1-ae18-4a64b07a1a24
 begin
 	if model_type == "NN"
@@ -269,7 +276,7 @@ begin
 	
 	ps, st = Lux.setup(Xoshiro(12345), model)
 
-	tstate = Training.TrainState(model, ps, st, opt)
+	tstate = Lux.Training.TrainState(model, ps, st, opt)
 	
 	ad_rule = AutoZygote()
 
@@ -316,13 +323,13 @@ ps_sample = sampled_params[1, :]
 # ╔═╡ bbb80aa6-096c-4fae-bc1d-2e2f5ba28b2d
 function predict(train_state, Xs)
 	st_ = Lux.testmode(train_state.states)
-	return -1 .* (Lux.apply(train_state.model, Xs, train_state.parameters, st_))[1]
+	return (Lux.apply(train_state.model, Xs, train_state.parameters, st_))[1]
 end
 
 # ╔═╡ 4fb91714-4412-49c3-b466-8ac3ee439047
 function predict(train_state, Xs, params)
 	st_ = Lux.testmode(train_state.states)
-	return -1 .* (Lux.apply(train_state.model, Xs, vector_to_parameters(params, train_state.parameters), st_))[1]
+	return (Lux.apply(train_state.model, Xs, vector_to_parameters(params, train_state.parameters), st_))[1]
 end
 
 # ╔═╡ 7c0f7137-a868-41a9-831d-6298189d27e4
@@ -363,17 +370,112 @@ function predict(train_state, Xs, params, time_step, x_1, x_2, standariser)
 	return pred_full
 end
 
+# ╔═╡ 1beac01f-b80b-4ed9-9e04-6581f9e2c003
+Lux.parameterlength(model)
+
+# ╔═╡ 1a1d3f1f-421e-42f5-9eff-24915c2b8c5f
+@model function bayes_nn(xs, ys, BNN_model, ps_BNN, sig, n_params, ::Type{T} = Float32) where {T}
+	# Priors
+    ## Sample the parameters
+    parameters ~ MvNormal(zeros(n_params), (sig^2)*I)
+	σ ~ truncated(Normal(0, 1); lower=1e-6)
+
+    ## Forward NN to make predictions
+    μ = Lux.apply(BNN_model, xs, vector_to_parameters(parameters, ps_BNN) |> f32)
+
+	## Likelihood
+    ys ~ MvNormal(vec(μ), (σ^2)*I)
+end
+
+# ╔═╡ 78baeae1-36cb-47a4-b82a-fba776e19635
+begin
+	if model_type == "NN"
+		BNN_arch = FNN(τ₀, τ₁, 1; depth=NN_depth, act=act, outer_act=exp)
+	else
+		BNN_arch = LSTM(τ₀, τ₁, 1; depth=NN_depth, cell=cell)
+	end
+	
+	ps_BNN, st_BNN = Lux.setup(Xoshiro(12345), BNN_arch)
+
+	n_params = Lux.parameterlength(BNN_arch)
+
+	alpha = 0.09
+	sig = sqrt(1.0 / alpha)
+
+	BNN_model = StatefulLuxLayer{true}(BNN_arch, nothing, st_BNN)
+
+	N_samples = 1_000
+
+	BNN_inference = bayes_nn(X_train, vec(y_train), BNN_model, ps_BNN, sig, n_params)
+	ad = AutoTracker()
+
+	chains = sample(BNN_inference, NUTS(0.9; adtype=ad), N_samples; discard_adapt=false)
+end
+
+# ╔═╡ a18df247-d38f-4def-b56f-7b025ca57e2f
+StatsPlots.plot(chains[:, 1:25:end, :])
+
+# ╔═╡ ef5320bf-0b65-45da-9a9b-7c52dca56733
+describe(chains)
+
+# ╔═╡ e3d59361-1d40-41dd-88b7-4cddcdf69d79
+# Extract all weight and bias parameters.
+θ = MCMCChains.group(chains, :parameters).value;
+
+# ╔═╡ c3ce3d5f-1fd7-4523-9184-1a51eba6a75f
+begin
+	_, idx = findmax(chains[:lp])
+
+	# Extract the max row value from i.
+	idx = idx.I[1]
+end
+
+# ╔═╡ 0e0860eb-5fe6-451b-9ecf-40c48f49a233
+begin
+	θ_MAP = θ[idx, :]
+	ps_MAP = vector_to_parameters(θ_MAP, ps_BNN)
+end
+
+# ╔═╡ 06de1912-a662-4988-8f95-a78322757f2f
+function predict(m, xs, θs, p_) 
+	return -vec(Lux.apply(m, xs, vector_to_parameters(θs, ps_BNN) |> f32))
+end
+
+# ╔═╡ c1ca74d8-8c90-427b-8bf2-41ab1d13bcf3
+function predict(m, Xs, params, p_, time_step, x_1, x_2, standariser)
+	X_ = deepcopy(Xs)
+	pred_full = zeros(time_step, 99-τ₀+1)
+	for i ∈ 1:time_step
+		pred = predict(m, X_, params, p_)
+		pred_full[i, :] = pred
+		pred_scale = standariser.(pred, x_1, x_2)
+		# Shift downwards
+		for j ∈ 1:(T-1)
+			X_[:, j, :] = X_[:, j+1, :]
+		end
+		for k ∈ 1:τ₀
+			X_[k, end, :] = pred_scale
+		end
+	end
+	return pred_full
+end
+
 # ╔═╡ c0047459-5f14-4af7-b541-8238763d4a70
 y_pred_valid = predict(tstate, X_valid)
+
+# ╔═╡ 7e8e62f5-28a1-4153-892a-fc8988130f4b
+mean((exp.(y_valid) .- exp.(y_pred_valid)) .^ 2)
 
 # ╔═╡ f1f84de0-488a-4bad-a2a4-64965d493dc7
 y_pred_train = predict(tstate, X_train)
 
-# ╔═╡ 7e8e62f5-28a1-4153-892a-fc8988130f4b
-mean((exp.(-y_valid) .- exp.(y_pred_valid)) .^ 2)
-
 # ╔═╡ c8bca677-24d5-4bcc-b881-e0f43f208ca9
-mean((exp.(-y_train) .- exp.(y_pred_train)) .^ 2)
+mean((exp.(y_train) .- exp.(y_pred_train)) .^ 2)
+
+# ╔═╡ f099a171-e1ba-4d74-87a3-010e0e9ff27a
+if model_type ≠ "NN"
+	forecast = predict(tstate, X_valid, (extended_forecast_year-end_year+1), x_1, x_2, min_max)
+end
 
 # ╔═╡ c59ed9df-f944-4ee6-881e-2986dc8b1d3d
 begin
@@ -396,18 +498,15 @@ begin
 		
 		plot(title="Validation Set ($end_year): $(country)\n τ₀=$τ₀, τ₁=$τ₁, T=$T, cell=$cell, depth=$NN_depth", xlab="Age", ylab="log μ", legend=:bottomright, ylim=(-12.0, 0.0))
 		
-		#for i ∈ 1:1_000
-		#	sample_pred = predict(tstate, X_valid, sampled_params[i, :])
-		#	plot!(start_age:end_age, vec(sample_pred), label="", width=0.05, alpha=0.5, color=:gray)
-		#end
-		plot!(start_age:end_age, vec(y_pred_valid), label="Predicted", width=2, color=:blue)
-		scatter!(start_age:end_age, vec(-y_valid'), label="Observed", color=:orange)
+		for i ∈ 10:N_samples
+			sample_pred = predict(BNN_model, X_valid, θ[i, :], ps_BNN)
+			plot!(start_age:end_age, vec(sample_pred), label="", width=0.05, alpha=0.5, color=:gray)
+		end
+		MAP_pred = predict(BNN_model, X_valid, θ_MAP, ps_BNN)
+		plot!(start_age:end_age, vec(y_pred_valid), label="Predicted: $(opt)", width=2, color=:blue)
+		plot!(start_age:end_age, vec(MAP_pred), label="Predicted: MAP", width=2, color=:red)
+		scatter!(start_age:end_age, vec(y_valid'), label="Observed", color=:orange)
 	end
-end
-
-# ╔═╡ f099a171-e1ba-4d74-87a3-010e0e9ff27a
-if model_type ≠ "NN"
-	forecast = predict(tstate, X_valid, (extended_forecast_year-end_year+1), x_1, x_2, min_max)
 end
 
 # ╔═╡ d826f3b4-8a5f-4f99-88fb-d9b8420c6d89
@@ -415,11 +514,13 @@ begin
 if model_type ≠ "NN"
 	forecast_year_ = 2018
 	plot(title="Forecast (Year $forecast_year_): $(country)\n τ₀=$τ₀, τ₁=$τ₁, T=$T, cell=$cell, depth=$NN_depth", xlab="Year", ylab="log μ", legend=:bottomright)
-	#for i ∈ 1:250
-	#	sample_forecast = predict(tstate, X_valid, sampled_params[i, :], (extended_forecast_year-end_year+1), x_1, x_2, min_max)
-	#	plot!(start_age:end_age, vec(sample_forecast[forecast_year_-end_year+1, :]'), label="", width=0.05, alpha=0.5, color=:gray)
-	#end
-	plot!(start_age:end_age, vec(forecast[forecast_year_-end_year+1, :]'), label="Forecast", color=:blue, width=2)
+	for i ∈ 1:N_samples
+		sample_forecast = predict(BNN_model, X_valid, θ[i, :], ps_BNN, (extended_forecast_year-end_year+1), x_1, x_2, min_max)
+		plot!(start_age:end_age, vec(sample_forecast[forecast_year_-end_year+1, :]'), label="", width=0.05, alpha=0.5, color=:gray)
+	end
+	MAP_forecast = predict(BNN_model, X_valid, θ_MAP, ps_BNN, (extended_forecast_year-end_year+1), x_1, x_2, min_max)
+	plot!(start_age:end_age, vec(forecast[forecast_year_-end_year+1, :]'), label="Forecast: $opt", color=:blue, width=2)
+	plot!(start_age:end_age, vec(MAP_forecast[forecast_year_-end_year+1, :]'), label="Forecast: MAP", color=:red, width=2)
 	scatter!(y_test[y_test.Year .== forecast_year_, :Age], y_test[y_test.Year .== forecast_year_, :Female], label="Actual", color=:orange)
 end
 end
@@ -432,11 +533,13 @@ if model_type ≠ "NN"
 		@assert forecast_age ≥ (τ₀ + 1)/2 - 1
 		
 		plot(title="Forecast (Age $forecast_age): $(country)\n τ₀=$τ₀, τ₁=$τ₁, T=$T, cell=$cell, depth=$NN_depth", xlab="Year", ylab="log μ", legend=:topright)
-		#for i ∈ 1:100
-		#	sample_forecast = predict(tstate, X_valid, sampled_params[i, :], (extended_forecast_year-end_year+1), x_1, x_2, min_max)
-		#	plot!(end_year:extended_forecast_year, sample_forecast[:, forecast_age+1], label="", width=0.05, alpha=0.5, color=:gray)
-		#end
-		plot!(end_year:extended_forecast_year, forecast[:, adj_forecast_age], label="Forecast", color=:blue, width=2)
+		for i ∈ 1:N_samples
+			sample_forecast = predict(BNN_model, X_valid, θ[i, :], ps_BNN, (extended_forecast_year-end_year+1), x_1, x_2, min_max)
+			plot!(end_year:extended_forecast_year, sample_forecast[:, forecast_age+1], label="", width=0.05, alpha=0.5, color=:gray)
+		end
+		MAP_forecast2 = predict(BNN_model, X_valid, θ_MAP, ps_BNN, (extended_forecast_year-end_year+1), x_1, x_2, min_max)
+		plot!(end_year:extended_forecast_year, forecast[:, adj_forecast_age], label="Forecast: $opt", color=:blue, width=2)
+		plot!(end_year:extended_forecast_year, MAP_forecast2[:, adj_forecast_age], label="Forecast: MAP", color=:red, width=2)
 		scatter!(y_test[y_test.Age .== forecast_age, :Year], y_test[y_test.Age .== forecast_age, :Female], label="Actual", color=:orange)
 	end
 end
@@ -444,6 +547,7 @@ end
 # ╔═╡ Cell order:
 # ╠═6264e41e-e179-11ef-19c1-f135e97db7cc
 # ╠═ef51c95e-d5ad-455a-9631-094823b695bb
+# ╠═f6696102-2894-4d54-be66-32004ea6486d
 # ╠═50b3b576-d941-4609-8469-6de51cfa1545
 # ╠═a0132c58-f427-4c88-ba45-bd8b9d9f98d4
 # ╠═5378ee86-303b-4269-88f3-6eeccc30cb15
@@ -452,6 +556,7 @@ end
 # ╠═59eed207-e138-44be-a241-d4cbfde0f38c
 # ╠═7b5558e7-30c8-4069-9175-6dd79d27c8f5
 # ╠═564d77df-85c1-406a-8964-3b14fca6328c
+# ╠═4f3ea277-b1b7-4cc6-a771-dd35d0c3c611
 # ╠═b7d6736b-776e-49d1-ae18-4a64b07a1a24
 # ╠═096a8a27-ddad-4534-94e4-71f755d5f561
 # ╠═bb6602f4-927e-473e-b8da-957395ed7617
@@ -467,7 +572,17 @@ end
 # ╠═f1f84de0-488a-4bad-a2a4-64965d493dc7
 # ╠═7e8e62f5-28a1-4153-892a-fc8988130f4b
 # ╠═c8bca677-24d5-4bcc-b881-e0f43f208ca9
-# ╠═c59ed9df-f944-4ee6-881e-2986dc8b1d3d
 # ╠═f099a171-e1ba-4d74-87a3-010e0e9ff27a
+# ╠═1beac01f-b80b-4ed9-9e04-6581f9e2c003
+# ╠═1a1d3f1f-421e-42f5-9eff-24915c2b8c5f
+# ╠═78baeae1-36cb-47a4-b82a-fba776e19635
+# ╠═a18df247-d38f-4def-b56f-7b025ca57e2f
+# ╠═ef5320bf-0b65-45da-9a9b-7c52dca56733
+# ╠═e3d59361-1d40-41dd-88b7-4cddcdf69d79
+# ╠═c3ce3d5f-1fd7-4523-9184-1a51eba6a75f
+# ╠═0e0860eb-5fe6-451b-9ecf-40c48f49a233
+# ╠═06de1912-a662-4988-8f95-a78322757f2f
+# ╠═c1ca74d8-8c90-427b-8bf2-41ab1d13bcf3
+# ╠═c59ed9df-f944-4ee6-881e-2986dc8b1d3d
 # ╠═d826f3b4-8a5f-4f99-88fb-d9b8420c6d89
 # ╠═c1b667d2-1411-4637-9309-967309cc30e6
