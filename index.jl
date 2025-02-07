@@ -31,10 +31,10 @@ begin
 	τ₁ = 8
 	T = 10
 	NN_depth = 1
-	cell = LSTMCell #LSTMCell
+	cell = GRUCell #LSTMCell
 	act = tanh
 	list_of_countries = HMD.get_countries()
-	country = list_of_countries["Japan"]
+	country = list_of_countries["Luxembourg"]
 	lr = 0.01
 	opt = Adam(lr)#NAdam(lr)
 	model_type = "LSTM"
@@ -304,8 +304,8 @@ begin
 	if model_type == "NN"
 		discrete_model = FNN(τ₀, τ₁, 1; depth=NN_depth, act=act, outer_act=identity)
 	else
-		#model = LSTM(τ₀, τ₁, 1; depth=NN_depth, cell=cell)
-		discrete_model = NNODE(τ₀, τ₁, 1; sensealg=GaussAdjoint(; autojacvec=ZygoteVJP()))
+		discrete_model = LSTM(τ₀, τ₁, 1; depth=NN_depth, cell=cell)
+		#discrete_model = NNODE(τ₀, τ₁, 1; sensealg=GaussAdjoint(; autojacvec=ZygoteVJP()))
 	end
 	
 	ps, st = Lux.setup(Xoshiro(12345), discrete_model)
@@ -335,16 +335,17 @@ begin
 end
 
 # ╔═╡ e006827b-2f8b-4b7a-9669-2fb64fadc129
-function vector_to_parameters(ps_new::AbstractVector, ps::NamedTuple)
-    @assert length(ps_new) == Lux.parameterlength(ps)
-    i = 1
-    function get_ps(x)
-        z = reshape(view(ps_new, i:(i + length(x) - 1)), size(x))
-        i += length(x)
-        return z
-    end
-    return fmap(get_ps, ps)
-end
+#function vector_to_parameters(ps_new::AbstractVector, ps::NamedTuple)
+#    @assert length(ps_new) == Lux.parameterlength(ps)
+#    i = 1
+#    function get_ps(x)
+#        z = reshape(view(ps_new, i:(i + length(x) - 1)), size(x))
+#        i += length(x)
+#        return z
+#    end
+#    return fmap(get_ps, ps)
+#end
+vector_to_parameters(ps_new, ps_) = ComponentArray(ps_new, getaxes(ps_))
 
 # ╔═╡ bbb80aa6-096c-4fae-bc1d-2e2f5ba28b2d
 function predict(train_state, Xs)
@@ -409,7 +410,7 @@ end
 
 # ╔═╡ 0711bfc1-4337-4ae4-a5b0-c7b08dae2190
 begin
-	N_samples = 20
+	N_samples = 1_000
 	half_N_samples = Int(N_samples/2)
 end
 
@@ -426,9 +427,7 @@ function BNN(BNN_arch, N_samples)
 		parameters ~ MvNormal(zeros(n_params), (sig^2) .* I)
 	
 		## Forward NN to make predictions
-		ps_BNN = ComponentArray(parameters, getaxes(ps_BNN))
-		μ, st_BNN = Lux.apply(BNN_arch, xs, ps_BNN, st_BNN)
-	#vector_to_parameters(parameters, ps_BNN)
+		μ, st_BNN = Lux.apply(BNN_arch, xs, vector_to_parameters(parameters, ps_BNN), st_BNN)
 	
 		## Likelihood
 		ys ~ MvNormal(vec(μ), (σ^2) .* I)
@@ -477,28 +476,42 @@ begin
 end
 
 # ╔═╡ 06de1912-a662-4988-8f95-a78322757f2f
-function predict(m, xs, θs, p_, st_)
+function predict(m, xs, chains, p_, st_; N_sims=1_000)
+	posterior_samples = sample(Xoshiro(1111), chains[half_N_samples:end, :, :], N_sims)
+	θ_sample = Matrix(MCMCChains.group(posterior_samples, :parameters).value[:, :, 1])
+	
 	st_test = Lux.testmode(st_)
-	return vec(Lux.apply(m, xs |> f64, vector_to_parameters(θs, ps_BNN) |> f64, st_test)[1])
+
+	fwd_pass(par) = vec(Lux.apply(m, xs |> f64, vector_to_parameters(par, p_) |> f64, st_test)[1])
+
+	y_pred_f = hcat([fwd_pass(θ_sample[k, :]) for k ∈ 1:N_sims]...)'
+
+	return quantile.(eachcol(y_pred_f), 0.5) |> vec, quantile.(eachcol(y_pred_f), 0.025) |> vec, quantile.(eachcol(y_pred_f), 0.975) |> vec
 end
 
 # ╔═╡ c1ca74d8-8c90-427b-8bf2-41ab1d13bcf3
-function predict(m, Xs, params, p_, st_, time_step, x_1, x_2, standariser)
-	X_ = deepcopy(Xs)
-	pred_full = zeros(time_step, 99-τ₀+1)
-	for i ∈ 1:time_step
-		pred = predict(m, X_, params, p_, st_)
-		pred_full[i, :] = pred
-		pred_scale = standariser.(pred, x_1, x_2)
-		# Shift downwards
-		for j ∈ 1:(T-1)
-			X_[:, j, :] = X_[:, j+1, :]
+function predict(m, Xs, chains, p_, st_, time_step, x_1, x_2, standariser; quant=0.5)
+	preds_set = []
+	for k ∈ 1:3
+		X_ = deepcopy(Xs)
+		pred_full = zeros(time_step, 99-τ₀+1)
+	
+		for i ∈ 1:time_step
+			pred = predict(m, X_, chains, p_, st_)[k]
+			pred_full[i, :] = pred
+			pred_scale = standariser.(pred, x_1, x_2)
+			# Shift downwards
+			for j ∈ 1:(T-1)
+				X_[:, j, :] = X_[:, j+1, :]
+			end
+			for k ∈ 1:τ₀
+				X_[k, end, :] = pred_scale
+			end
 		end
-		for k ∈ 1:τ₀
-			X_[k, end, :] = pred_scale
-		end
+		push!(preds_set, pred_full)
 	end
-	return pred_full
+			
+	return preds_set
 end
 
 # ╔═╡ 3c47c725-8751-4088-bc99-39c3cc653377
@@ -532,12 +545,8 @@ begin
 		
 		plot(title="Validation Set ($end_year): $(country)\n τ₁=$τ₁, act=$act, FNN, depth=$NN_depth", xlab="Age", ylab="log μ", legend=:bottomright, ylim=(-12.0, 0.0))
 		
-		for i ∈ half_N_samples:N_samples
-			sample_pred = predict(BNN_arch, X_test_valid, θ[i, :], ps_BNN, st_BNN)
-			plot!(start_age:end_age, vec(sample_pred), label="", width=0.05, alpha=0.5, color=:red)
-		end
-		MAP_pred = predict(BNN_arch, X_test_valid, θ_MAP, ps_BNN, st_BNN)
-		plot!(start_age:end_age, vec(MAP_pred), label="Predicted: MAP", width=2, color=:red)
+		MAP_pred, lb_pred, ub_pred = predict(BNN_arch, X_test_valid, chains, ps_BNN, st_BNN)
+		plot!(start_age:end_age, vec(MAP_pred), label="Predicted: Mean", width=2, color=:red)
 		plot!(start_age:end_age, vec(y_pred_test), label="Predicted: $opt", width=2, color=:blue)
 		scatter!(X_valid_ages, vec(y_valid'), label="Observed", color=:orange)
 	else
@@ -546,13 +555,11 @@ begin
 		
 		plot(title="Validation Set ($end_year): $(country)\n τ₀=$τ₀, τ₁=$τ₁, T=$T, cell=$cell, depth=$NN_depth", xlab="Age", ylab="log μ", legend=:bottomright, ylim=(-12.0, 0.0))
 		
-		for i ∈ half_N_samples:N_samples
-			sample_pred = predict(BNN_arch, X_valid, θ[i, :], ps_BNN, st_BNN)
-			plot!(start_age:end_age, vec(sample_pred), label="", width=0.05, alpha=0.5, color=:red)
-		end
-		MAP_pred = predict(BNN_arch, X_valid, θ_MAP, ps_BNN, st_BNN)
+		MAP_pred, lb_pred, ub_pred = predict(BNN_arch, X_valid, chains, ps_BNN, st_BNN)
+		
 		plot!(start_age:end_age, vec(y_pred_valid), label="Predicted: $(opt)", width=2, color=:blue)
-		plot!(start_age:end_age, vec(MAP_pred), label="Predicted: MAP", width=2, color=:red)
+		plot!(start_age:end_age, vec(MAP_pred), label="Predicted: Median", width=2, color=:red)
+		plot!(start_age:end_age, lb_pred, fillrange=ub_pred, label="Predicted: 95% CI", width=0.9, color=:red, alpha=0.2)
 		scatter!(start_age:end_age, vec(y_valid'), label="Observed", color=:orange)
 	end
 end
@@ -562,13 +569,12 @@ begin
 	if model_type ≠ "NN"
 		forecast_year_ = 2010
 		plot(title="Forecast (Year $forecast_year_): $(country)\n τ₀=$τ₀, τ₁=$τ₁, T=$T, cell=$cell, depth=$NN_depth", xlab="Year", ylab="log μ", legend=:bottomright)
-		for i ∈ half_N_samples:N_samples
-			sample_forecast = predict(BNN_arch, X_valid, θ[i, :], ps_BNN, st_BNN, (extended_forecast_year-end_year+1), x_1, x_2, standardise)
-			plot!(start_age:end_age, vec(sample_forecast[forecast_year_-end_year+1, :]'), label="", width=0.05, alpha=0.5, color=:red)
-		end
-		MAP_forecast = predict(BNN_arch, X_valid, θ_MAP, ps_BNN, st_BNN,  (extended_forecast_year-end_year+1), x_1, x_2, standardise)
+
+		MAP_forecast, lb_forecast, ub_forecast = predict(BNN_arch, X_valid, chains, ps_BNN, st_BNN, (extended_forecast_year-end_year+1), x_1, x_2, standardise)
+		
 		plot!(start_age:end_age, vec(forecast[forecast_year_-end_year+1, :]'), label="Forecast: $opt", color=:blue, width=2)
-		plot!(start_age:end_age, vec(MAP_forecast[forecast_year_-end_year+1, :]'), label="Forecast: MAP", color=:red, width=2)
+		plot!(start_age:end_age, vec(MAP_forecast[forecast_year_-end_year+1, :]'), label="Forecast: Median", color=:red, width=2)
+		plot!(start_age:end_age, vec(lb_forecast[forecast_year_-end_year+1, :]'), fillrange=vec(ub_forecast[forecast_year_-end_year+1, :]'), label="Forecast: 95% CI", color=:red, width=0.9, alpha=0.2)
 		scatter!(y_test[y_test.Year .== forecast_year_, :Age], y_test[y_test.Year .== forecast_year_, :Female], label="Actual", color=:orange)
 	else
 		forecast_year_ = 2010
@@ -577,12 +583,10 @@ begin
 		
 		plot(title="Forecast (Year $forecast_year_): $(country)\n τ₁=$τ₁, act=$act, FNN, depth=$NN_depth", xlab="Age", ylab="log μ", legend=:bottomright, ylim=(-12.0, 0.0))
 		
-		for i ∈ half_N_samples:N_samples
-			sample_pred = predict(BNN_arch, X_test_forecast, θ[i, :], ps_BNN, st_BNN)
-			plot!(start_age:end_age, vec(sample_pred), label="", width=0.05, alpha=0.5, color=:red)
-		end
-		MAP_pred_ = predict(BNN_arch, X_test_forecast, θ_MAP, ps_BNN, st_BNN)
-		plot!(start_age:end_age, vec(MAP_pred_), label="Predicted: MAP", width=2, color=:red)
+		MAP_forecast, lb_forecast, ub_forecast = predict(BNN_arch, X_test_forecast, chains, ps_BNN, st_BNN, (extended_forecast_year-end_year+1), x_1, x_2, standardise)
+
+		plot!(start_age:end_age, vec(MAP_forecast), label="Predicted: Mean", width=2, color=:red)
+		plot!(start_age:end_age, vec(lb_forecast), fillrange=vec(ub_forecast), label="Forecast: 95% CI", color=:red, width=0.9, alpha=0.2)
 		plot!(start_age:end_age, vec(y_pred_test), label="Predicted: $opt", width=2, color=:blue)
 		scatter!(y_test[y_test.Year .== forecast_year_, :Age], y_test[y_test.Year .== forecast_year_, :Female], label="Actual", color=:orange)
 	end
@@ -596,13 +600,12 @@ if model_type ≠ "NN"
 		@assert forecast_age ≥ (τ₀ + 1)/2 - 1
 		
 		plot(title="Forecast (Age $forecast_age): $(country)\n τ₀=$τ₀, τ₁=$τ₁, T=$T, cell=$cell, depth=$NN_depth", xlab="Year", ylab="log μ", legend=:bottomleft)
-		for i ∈ half_N_samples:N_samples
-			sample_forecast = predict(BNN_arch, X_valid, θ[i, :], ps_BNN, st_BNN, (extended_forecast_year-end_year+1), x_1, x_2, standardise)
-			plot!(end_year:extended_forecast_year, sample_forecast[:, forecast_age+1], label="", width=0.05, alpha=0.5, color=:red)
-		end
-		MAP_forecast2 = predict(BNN_arch, X_valid, θ_MAP, ps_BNN, st_BNN,  (extended_forecast_year-end_year+1), x_1, x_2, standardise)
+	
+		MAP_forecast2, lb_forecast2, ub_forecast2 = predict(BNN_arch, X_valid, chains, ps_BNN, st_BNN, (extended_forecast_year-end_year+1), x_1, x_2, standardise)
+	
 		plot!(end_year:extended_forecast_year, forecast[:, adj_forecast_age], label="Forecast: $opt", color=:blue, width=2)
-		plot!(end_year:extended_forecast_year, MAP_forecast2[:, adj_forecast_age], label="Forecast: MAP", color=:red, width=2)
+		plot!(end_year:extended_forecast_year, MAP_forecast2[:, adj_forecast_age], label="Forecast: Median", color=:red, width=2)
+		plot!(end_year:extended_forecast_year, lb_forecast2[:, adj_forecast_age], fillrange=ub_forecast2[:, adj_forecast_age], label="Forecast: 95% CI", color=:red, width=0.9, alpha=0.2)
 		scatter!(y_test[y_test.Age .== forecast_age, :Year], y_test[y_test.Age .== forecast_age, :Female], label="Actual", color=:orange)
 	end
 end
