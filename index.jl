@@ -10,13 +10,13 @@ begin
 	using Pkg
 	cd(".")
 	Pkg.activate(".")
-	Pkg.add(url="https://github.com/patrickm663/HMD.jl")
-	Pkg.add(name="Turing", version="0.34.1")
-	Pkg.add(["CSV", "DataFrames", "Lux", "ADTypes", "Zygote", "Optimisers", "Plots", "ComponentArrays", "Distributions", "Functors", "Tracker", "StatsPlots"])
+	#Pkg.add(url="https://github.com/patrickm663/HMD.jl")
+	#Pkg.add(name="Turing", version="0.34.1")
+	#Pkg.add(["CSV", "DataFrames", "Lux", "ADTypes", "Zygote", "Optimisers", "Plots", "ComponentArrays", "Distributions", "Functors", "Tracker", "StatsPlots", "SciMLSensitivity", "OrdinaryDiffEqTsit5"])
 end
 
 # ╔═╡ ef51c95e-d5ad-455a-9631-094823b695bb
-using ADTypes, Lux, Optimisers, Printf, Random, CSV, Plots, DataFrames, ComponentArrays, HMD, Zygote, Statistics, Distributions, Functors, Turing, Tracker, LinearAlgebra, StatsPlots
+using ADTypes, Lux, Optimisers, Printf, Random, CSV, Plots, DataFrames, ComponentArrays, HMD, Zygote, Statistics, Distributions, Functors, Turing, Tracker, LinearAlgebra, StatsPlots, SciMLSensitivity, OrdinaryDiffEqTsit5
 
 # ╔═╡ f6696102-2894-4d54-be66-32004ea6486d
 Turing.setprogress!(true);
@@ -31,11 +31,11 @@ begin
 	τ₁ = 8
 	T = 10
 	NN_depth = 1
-	cell = GRUCell #LSTMCell
+	cell = LSTMCell #LSTMCell
 	act = tanh
 	list_of_countries = HMD.get_countries()
-	country = list_of_countries["Luxembourg"]
-	lr = 0.05
+	country = list_of_countries["Japan"]
+	lr = 0.01
 	opt = Adam(lr)#NAdam(lr)
 	model_type = "LSTM"
 	# Hard-code
@@ -76,6 +76,42 @@ function LSTM(in_dims, hidden_dims, out_dims; depth=1, cell=LSTMCell)
 			Dense(hidden_dims => out_dims, identity)
 		)
 	end
+end
+
+# ╔═╡ 8fef40e0-4528-4224-9d9e-6e306b626f7d
+function NNODE(in_dims, hidden_dims, out_dims; sensealg=InterpolatingAdjoint(; autojacvec=ZygoteVJP()))
+# Source: https://lux.csail.mit.edu/stable/tutorials/intermediate/1_NeuralODE
+	
+	flatten_dim = Int(T*τ₀)
+	
+	function NeuralODE(
+	        model::Lux.AbstractLuxLayer; solver=Tsit5(), tspan=(0.0f0, 1.0f0), kwargs...)
+	    return @compact(; model, solver, tspan, kwargs...) do x, p
+	        dudt(u, p, t) = vec(model(reshape(u, size(x)), p))
+	        # Note the `p.model` here
+	        prob = ODEProblem(ODEFunction{false}(dudt), vec(x), tspan, p.model)
+	        @return solve(prob, solver; kwargs...)
+	    end
+	end
+
+	internal_NN =  Chain(
+				Dense(flatten_dim => hidden_dims, tanh), 
+				Dense(hidden_dims => hidden_dims, tanh), 
+				Dense(hidden_dims => flatten_dim, tanh)
+	)
+
+	@views diffeqsol_to_array(l::Int, x::ODESolution) = reshape(last(x.u), (l, :))
+	@views diffeqsol_to_array(l::Int, x::AbstractMatrix) = reshape(x[:, end], (l, :))
+	
+    # Construct the Neural ODE Model
+    return Chain(
+		FlattenLayer(),
+        #Dense(Int(T*τ₀) => T, tanh),
+        NeuralODE(internal_NN;
+            save_everystep=false, reltol=1.0f-4,
+            abstol=1.0f-4, save_start=false, sensealg),
+        Base.Fix1(diffeqsol_to_array, flatten_dim),
+        Dense(flatten_dim => out_dims))
 end
 
 # ╔═╡ 608363b0-5f75-45c8-8970-5170489a5eeb
@@ -185,19 +221,19 @@ function get_data(country; T=10, τ₀=3, start_year=1990, end_year=2001, LSTM_f
 		train = Matrix(train) |> f32
 		valid = Matrix(valid) |> f32
 
-		# Recreate the validation set but using all ages to test interpolation
-		X_test = hcat(repeat([end_year * 1.0], 99), 0:98) |> f32
+		# Recreate the full forecast set but using all ages to test interpolation
+		X_test = DataFrame(1.0*hcat(repeat(end_year:forecast_year, 99), repeat(0:98, (forecast_year - end_year + 1))), :auto) |> sort |> Matrix |> f32
 
 		X_train = train[:, 1:2]
 		X_valid = valid[:, 1:2]
-		y_train = -log.(train[:, end])
-		y_valid = -log.(valid[:, end])
+		y_train = log.(train[:, end])
+		y_valid = log.(valid[:, end])
 
 		validation_ages = X_valid[:, 2]
 
 		if min_max_scale == true
-			year_min, year_max = extrema(X_train[:, 1])
-			age_min, age_max = extrema(X_train[:, 2])
+			year_min, year_max = (start_year, end_year-1)
+			age_min, age_max = (0, 98)
 	
 			X_train[:, 1] .= min_max.(X_train[:, 1], year_min, year_max)
 			X_valid[:, 1] .= min_max.(X_valid[:, 1], year_min, year_max)
@@ -207,8 +243,8 @@ function get_data(country; T=10, τ₀=3, start_year=1990, end_year=2001, LSTM_f
 			X_valid[:, 2] .= min_max.(X_valid[:, 2], age_min, age_max)
 			X_test[:, 2] .= min_max.(X_test[:, 2], age_min, age_max)
 		else
-			year_mu, year_sigma = (mean(X_train[:, 1]), std(X_train[:, 1]))
-			age_mu, age_sigma = (mean(X_train[:, 2]), std(X_train[:, 2]))
+			year_mu, year_sigma = (mean(start_year:(end_year-1)), std(start_year:(end_year-1)))
+			age_mu, age_sigma = (mean(0:98), std(0:98))
 	
 			X_train[:, 1] .= standardise.(X_train[:, 1], year_mu, year_sigma)
 			X_valid[:, 1] .= standardise.(X_valid[:, 1], year_mu, year_sigma)
@@ -227,9 +263,9 @@ end
 
 # ╔═╡ 7b5558e7-30c8-4069-9175-6dd79d27c8f5
 if model_type == "NN"
-	X_train, y_train, X_valid, y_valid, X_test, X_valid_ages, y_test = get_data(country; T=T, τ₀=τ₀, LSTM_format=false,  min_max_scale=true, start_year=start_year)
+	X_train, y_train, X_valid, y_valid, X_test, X_valid_ages, y_test = get_data(country; T=T, τ₀=τ₀, LSTM_format=false,  min_max_scale=false, start_year=start_year)
 else
-	X_train, y_train, X_valid, y_valid, x_1, x_2, y_test = get_data(country; T=T, τ₀=τ₀, LSTM_format=true,  min_max_scale=true, start_year=start_year)
+	X_train, y_train, X_valid, y_valid, x_1, x_2, y_test = get_data(country; T=T, τ₀=τ₀, LSTM_format=true,  min_max_scale=false, start_year=start_year)
 end
 
 # ╔═╡ 564d77df-85c1-406a-8964-3b14fca6328c
@@ -263,20 +299,19 @@ function main(tstate, vjp, data, epochs; early_stopping=true)
     return tstate, train_losses, valid_losses
 end
 
-# ╔═╡ 4f3ea277-b1b7-4cc6-a771-dd35d0c3c611
-
-
 # ╔═╡ b7d6736b-776e-49d1-ae18-4a64b07a1a24
 begin
 	if model_type == "NN"
-		model = FNN(τ₀, τ₁, 1; depth=NN_depth, act=act, outer_act=exp)
+		discrete_model = FNN(τ₀, τ₁, 1; depth=NN_depth, act=act, outer_act=identity)
 	else
-		model = LSTM(τ₀, τ₁, 1; depth=NN_depth, cell=cell)
+		#model = LSTM(τ₀, τ₁, 1; depth=NN_depth, cell=cell)
+		discrete_model = NNODE(τ₀, τ₁, 1; sensealg=GaussAdjoint(; autojacvec=ZygoteVJP()))
 	end
 	
-	ps, st = Lux.setup(Xoshiro(12345), model)
+	ps, st = Lux.setup(Xoshiro(12345), discrete_model)
+	ps = ps |> ComponentArray
 
-	tstate = Lux.Training.TrainState(model, ps, st, opt)
+	tstate = Lux.Training.TrainState(discrete_model, ps, st, opt)
 	
 	ad_rule = AutoZygote()
 
@@ -285,7 +320,7 @@ begin
 end
 
 # ╔═╡ 096a8a27-ddad-4534-94e4-71f755d5f561
-model
+discrete_model
 
 # ╔═╡ bb6602f4-927e-473e-b8da-957395ed7617
 begin
@@ -310,15 +345,6 @@ function vector_to_parameters(ps_new::AbstractVector, ps::NamedTuple)
     end
     return fmap(get_ps, ps)
 end
-
-# ╔═╡ 3ed8e1da-6ac1-48fa-ab1d-8272025d5aad
-list_of_params = vcat(ComponentArray(tstate.parameters)...)
-
-# ╔═╡ 930cdb5c-f80e-4f1e-b745-fbc42e7a47d7
-sampled_params = hcat([rand(Xoshiro(1), Normal(i, 0.05*std(list_of_params)), 1_000) for i ∈ list_of_params]...) |> f32
-
-# ╔═╡ 42a12287-4469-465c-9626-20de6708ce38
-ps_sample = sampled_params[1, :]
 
 # ╔═╡ bbb80aa6-096c-4fae-bc1d-2e2f5ba28b2d
 function predict(train_state, Xs)
@@ -371,49 +397,63 @@ function predict(train_state, Xs, params, time_step, x_1, x_2, standariser)
 end
 
 # ╔═╡ 1beac01f-b80b-4ed9-9e04-6581f9e2c003
-Lux.parameterlength(model)
+Lux.parameterlength(discrete_model)
 
-# ╔═╡ 1a1d3f1f-421e-42f5-9eff-24915c2b8c5f
-@model function bayes_nn(xs, ys, BNN_model, ps_BNN, sig, n_params, ::Type{T} = Float32) where {T}
-	# Priors
-    ## Sample the parameters
-    parameters ~ MvNormal(zeros(n_params), (sig^2)*I)
-	σ ~ truncated(Normal(0, 1); lower=1e-6)
+# ╔═╡ 2598323d-8e4b-4789-8f77-97cc99b94b29
+if model_type == "NN"
+	BNN_arch = FNN(τ₀, τ₁, 1; depth=NN_depth, act=act, outer_act=identity)
+else
+	BNN_arch = LSTM(τ₀, τ₁, 1; depth=NN_depth, cell=cell)
+	#BNN_arch = NNODE(τ₀, τ₁, 1; sensealg=GaussAdjoint(; autojacvec=ZygoteVJP()))
+end
 
-    ## Forward NN to make predictions
-    μ = Lux.apply(BNN_model, xs, vector_to_parameters(parameters, ps_BNN) |> f32)
-
-	## Likelihood
-    ys ~ MvNormal(vec(μ), (σ^2)*I)
+# ╔═╡ 0711bfc1-4337-4ae4-a5b0-c7b08dae2190
+begin
+	N_samples = 20
+	half_N_samples = Int(N_samples/2)
 end
 
 # ╔═╡ 78baeae1-36cb-47a4-b82a-fba776e19635
-begin
-	if model_type == "NN"
-		BNN_arch = FNN(τ₀, τ₁, 1; depth=NN_depth, act=act, outer_act=exp)
-	else
-		BNN_arch = LSTM(τ₀, τ₁, 1; depth=NN_depth, cell=cell)
-	end
+function BNN(BNN_arch, N_samples)
+	ps_BNN, st_BNN = Lux.setup(Xoshiro(12345), BNN_arch) |> f64
+	ps_BNN = ps_BNN |> ComponentArray
+
+	@model function bayes_nn(xs, ys, BNN_arch, ps_BNN, sig, n_params, ::Type{T} = Float64) where {T}
 	
-	ps_BNN, st_BNN = Lux.setup(Xoshiro(12345), BNN_arch)
+		# Priors
+		## Sample the parameters
+		σ ~ truncated(Normal(0, 1); lower=1e-9)
+		parameters ~ MvNormal(zeros(n_params), (sig^2) .* I)
+	
+		## Forward NN to make predictions
+		ps_BNN = ComponentArray(parameters, getaxes(ps_BNN))
+		μ, st_BNN = Lux.apply(BNN_arch, xs, ps_BNN, st_BNN)
+	#vector_to_parameters(parameters, ps_BNN)
+	
+		## Likelihood
+		ys ~ MvNormal(vec(μ), (σ^2) .* I)
+
+		return nothing
+	end
 
 	n_params = Lux.parameterlength(BNN_arch)
 
-	alpha = 0.09
+	alpha = 0.80
 	sig = sqrt(1.0 / alpha)
 
-	BNN_model = StatefulLuxLayer{true}(BNN_arch, nothing, st_BNN)
-
-	N_samples = 1_500
-
-	BNN_inference = bayes_nn(X_train, vec(y_train), BNN_model, ps_BNN, sig, n_params)
+	BNN_inference = bayes_nn(X_train |> f64, vec(y_train) |> f64, BNN_arch, ps_BNN, sig, n_params)
 	ad = AutoTracker()
 
-	chains = sample(BNN_inference, NUTS(0.9; adtype=ad), N_samples; discard_adapt=false)
+	chains = sample(Xoshiro(22), BNN_inference, NUTS(0.6; adtype=ad), N_samples; discard_adapt=false)
+
+	return chains, ps_BNN, st_BNN
 end
 
+# ╔═╡ 60fe0f3c-89e0-4996-8af6-7424b772cefa
+chains, ps_BNN, st_BNN = BNN(BNN_arch, N_samples)
+
 # ╔═╡ a18df247-d38f-4def-b56f-7b025ca57e2f
-StatsPlots.plot(chains[10:end, 1:25:end, :])
+StatsPlots.plot(chains[half_N_samples:end, 1:50:end, :])
 
 # ╔═╡ ef5320bf-0b65-45da-9a9b-7c52dca56733
 describe(chains)
@@ -437,16 +477,17 @@ begin
 end
 
 # ╔═╡ 06de1912-a662-4988-8f95-a78322757f2f
-function predict(m, xs, θs, p_) 
-	return vec(Lux.apply(m, xs, vector_to_parameters(θs, ps_BNN) |> f32))
+function predict(m, xs, θs, p_, st_)
+	st_test = Lux.testmode(st_)
+	return vec(Lux.apply(m, xs |> f64, vector_to_parameters(θs, ps_BNN) |> f64, st_test)[1])
 end
 
 # ╔═╡ c1ca74d8-8c90-427b-8bf2-41ab1d13bcf3
-function predict(m, Xs, params, p_, time_step, x_1, x_2, standariser)
+function predict(m, Xs, params, p_, st_, time_step, x_1, x_2, standariser)
 	X_ = deepcopy(Xs)
 	pred_full = zeros(time_step, 99-τ₀+1)
 	for i ∈ 1:time_step
-		pred = predict(m, X_, params, p_)
+		pred = predict(m, X_, params, p_, st_)
 		pred_full[i, :] = pred
 		pred_scale = standariser.(pred, x_1, x_2)
 		# Shift downwards
@@ -459,6 +500,9 @@ function predict(m, Xs, params, p_, time_step, x_1, x_2, standariser)
 	end
 	return pred_full
 end
+
+# ╔═╡ 3c47c725-8751-4088-bc99-39c3cc653377
+predict(tstate, X_train)
 
 # ╔═╡ c0047459-5f14-4af7-b541-8238763d4a70
 y_pred_valid = predict(tstate, X_valid)
@@ -474,35 +518,39 @@ mean((exp.(y_train) .- exp.(y_pred_train)) .^ 2)
 
 # ╔═╡ f099a171-e1ba-4d74-87a3-010e0e9ff27a
 if model_type ≠ "NN"
-	forecast = predict(tstate, X_valid, (extended_forecast_year-end_year+1), x_1, x_2, min_max)
+	forecast = predict(tstate, X_valid, (extended_forecast_year-end_year+1), x_1, x_2, standardise)
 end
 
 # ╔═╡ c59ed9df-f944-4ee6-881e-2986dc8b1d3d
 begin
 	if model_type == "NN"
-		y_pred_test = predict(tstate, X_test)
+		# Get first year of validation/test set
+		X_test_valid = X_test[:, 1:99]
+		y_pred_test = predict(tstate, X_test_valid)
 		start_age = 0
 		end_age = 98
 		
 		plot(title="Validation Set ($end_year): $(country)\n τ₁=$τ₁, act=$act, FNN, depth=$NN_depth", xlab="Age", ylab="log μ", legend=:bottomright, ylim=(-12.0, 0.0))
 		
-		#for i ∈ 1:1_000
-		#	sample_pred = predict(tstate, X_test, sampled_params[i, :])
-		#	plot!(start_age:end_age, vec(sample_pred), label="", width=0.05, alpha=0.5, color=:gray)
-		#end
-		plot!(start_age:end_age, vec(y_pred_test), label="Predicted", width=2, color=:blue)
-		scatter!(X_valid_ages, vec(-y_valid'), label="Observed", color=:orange)
+		for i ∈ half_N_samples:N_samples
+			sample_pred = predict(BNN_arch, X_test_valid, θ[i, :], ps_BNN, st_BNN)
+			plot!(start_age:end_age, vec(sample_pred), label="", width=0.05, alpha=0.5, color=:red)
+		end
+		MAP_pred = predict(BNN_arch, X_test_valid, θ_MAP, ps_BNN, st_BNN)
+		plot!(start_age:end_age, vec(MAP_pred), label="Predicted: MAP", width=2, color=:red)
+		plot!(start_age:end_age, vec(y_pred_test), label="Predicted: $opt", width=2, color=:blue)
+		scatter!(X_valid_ages, vec(y_valid'), label="Observed", color=:orange)
 	else
 		start_age = τ₀ - 2
 		end_age = 97
 		
 		plot(title="Validation Set ($end_year): $(country)\n τ₀=$τ₀, τ₁=$τ₁, T=$T, cell=$cell, depth=$NN_depth", xlab="Age", ylab="log μ", legend=:bottomright, ylim=(-12.0, 0.0))
 		
-		for i ∈ 10:N_samples
-			sample_pred = predict(BNN_model, X_valid, θ[i, :], ps_BNN)
+		for i ∈ half_N_samples:N_samples
+			sample_pred = predict(BNN_arch, X_valid, θ[i, :], ps_BNN, st_BNN)
 			plot!(start_age:end_age, vec(sample_pred), label="", width=0.05, alpha=0.5, color=:red)
 		end
-		MAP_pred = predict(BNN_model, X_valid, θ_MAP, ps_BNN)
+		MAP_pred = predict(BNN_arch, X_valid, θ_MAP, ps_BNN, st_BNN)
 		plot!(start_age:end_age, vec(y_pred_valid), label="Predicted: $(opt)", width=2, color=:blue)
 		plot!(start_age:end_age, vec(MAP_pred), label="Predicted: MAP", width=2, color=:red)
 		scatter!(start_age:end_age, vec(y_valid'), label="Observed", color=:orange)
@@ -511,18 +559,33 @@ end
 
 # ╔═╡ d826f3b4-8a5f-4f99-88fb-d9b8420c6d89
 begin
-if model_type ≠ "NN"
-	forecast_year_ = 2018
-	plot(title="Forecast (Year $forecast_year_): $(country)\n τ₀=$τ₀, τ₁=$τ₁, T=$T, cell=$cell, depth=$NN_depth", xlab="Year", ylab="log μ", legend=:bottomright)
-	for i ∈ 1:N_samples
-		sample_forecast = predict(BNN_model, X_valid, θ[i, :], ps_BNN, (extended_forecast_year-end_year+1), x_1, x_2, min_max)
-		plot!(start_age:end_age, vec(sample_forecast[forecast_year_-end_year+1, :]'), label="", width=0.05, alpha=0.5, color=:red)
+	if model_type ≠ "NN"
+		forecast_year_ = 2010
+		plot(title="Forecast (Year $forecast_year_): $(country)\n τ₀=$τ₀, τ₁=$τ₁, T=$T, cell=$cell, depth=$NN_depth", xlab="Year", ylab="log μ", legend=:bottomright)
+		for i ∈ half_N_samples:N_samples
+			sample_forecast = predict(BNN_arch, X_valid, θ[i, :], ps_BNN, st_BNN, (extended_forecast_year-end_year+1), x_1, x_2, standardise)
+			plot!(start_age:end_age, vec(sample_forecast[forecast_year_-end_year+1, :]'), label="", width=0.05, alpha=0.5, color=:red)
+		end
+		MAP_forecast = predict(BNN_arch, X_valid, θ_MAP, ps_BNN, st_BNN,  (extended_forecast_year-end_year+1), x_1, x_2, standardise)
+		plot!(start_age:end_age, vec(forecast[forecast_year_-end_year+1, :]'), label="Forecast: $opt", color=:blue, width=2)
+		plot!(start_age:end_age, vec(MAP_forecast[forecast_year_-end_year+1, :]'), label="Forecast: MAP", color=:red, width=2)
+		scatter!(y_test[y_test.Year .== forecast_year_, :Age], y_test[y_test.Year .== forecast_year_, :Female], label="Actual", color=:orange)
+	else
+		forecast_year_ = 2010
+		X_test_forecast = X_test[:, ((forecast_year_ - end_year)*99 + 1):((forecast_year_ - end_year)*99 + 99)]
+		y_pred_forecast = predict(tstate, X_test_forecast)
+		
+		plot(title="Forecast (Year $forecast_year_): $(country)\n τ₁=$τ₁, act=$act, FNN, depth=$NN_depth", xlab="Age", ylab="log μ", legend=:bottomright, ylim=(-12.0, 0.0))
+		
+		for i ∈ half_N_samples:N_samples
+			sample_pred = predict(BNN_arch, X_test_forecast, θ[i, :], ps_BNN, st_BNN)
+			plot!(start_age:end_age, vec(sample_pred), label="", width=0.05, alpha=0.5, color=:red)
+		end
+		MAP_pred_ = predict(BNN_arch, X_test_forecast, θ_MAP, ps_BNN, st_BNN)
+		plot!(start_age:end_age, vec(MAP_pred_), label="Predicted: MAP", width=2, color=:red)
+		plot!(start_age:end_age, vec(y_pred_test), label="Predicted: $opt", width=2, color=:blue)
+		scatter!(y_test[y_test.Year .== forecast_year_, :Age], y_test[y_test.Year .== forecast_year_, :Female], label="Actual", color=:orange)
 	end
-	MAP_forecast = predict(BNN_model, X_valid, θ_MAP, ps_BNN, (extended_forecast_year-end_year+1), x_1, x_2, min_max)
-	plot!(start_age:end_age, vec(forecast[forecast_year_-end_year+1, :]'), label="Forecast: $opt", color=:blue, width=2)
-	plot!(start_age:end_age, vec(MAP_forecast[forecast_year_-end_year+1, :]'), label="Forecast: MAP", color=:red, width=2)
-	scatter!(y_test[y_test.Year .== forecast_year_, :Age], y_test[y_test.Year .== forecast_year_, :Female], label="Actual", color=:orange)
-end
 end
 
 # ╔═╡ c1b667d2-1411-4637-9309-967309cc30e6
@@ -532,12 +595,12 @@ if model_type ≠ "NN"
 		adj_forecast_age = forecast_age + Int((3 - τ₀)/2)
 		@assert forecast_age ≥ (τ₀ + 1)/2 - 1
 		
-		plot(title="Forecast (Age $forecast_age): $(country)\n τ₀=$τ₀, τ₁=$τ₁, T=$T, cell=$cell, depth=$NN_depth", xlab="Year", ylab="log μ", legend=:topright)
-		for i ∈ 1:N_samples
-			sample_forecast = predict(BNN_model, X_valid, θ[i, :], ps_BNN, (extended_forecast_year-end_year+1), x_1, x_2, min_max)
+		plot(title="Forecast (Age $forecast_age): $(country)\n τ₀=$τ₀, τ₁=$τ₁, T=$T, cell=$cell, depth=$NN_depth", xlab="Year", ylab="log μ", legend=:bottomleft)
+		for i ∈ half_N_samples:N_samples
+			sample_forecast = predict(BNN_arch, X_valid, θ[i, :], ps_BNN, st_BNN, (extended_forecast_year-end_year+1), x_1, x_2, standardise)
 			plot!(end_year:extended_forecast_year, sample_forecast[:, forecast_age+1], label="", width=0.05, alpha=0.5, color=:red)
 		end
-		MAP_forecast2 = predict(BNN_model, X_valid, θ_MAP, ps_BNN, (extended_forecast_year-end_year+1), x_1, x_2, min_max)
+		MAP_forecast2 = predict(BNN_arch, X_valid, θ_MAP, ps_BNN, st_BNN,  (extended_forecast_year-end_year+1), x_1, x_2, standardise)
 		plot!(end_year:extended_forecast_year, forecast[:, adj_forecast_age], label="Forecast: $opt", color=:blue, width=2)
 		plot!(end_year:extended_forecast_year, MAP_forecast2[:, adj_forecast_age], label="Forecast: MAP", color=:red, width=2)
 		scatter!(y_test[y_test.Age .== forecast_age, :Year], y_test[y_test.Age .== forecast_age, :Female], label="Actual", color=:orange)
@@ -552,18 +615,16 @@ end
 # ╠═a0132c58-f427-4c88-ba45-bd8b9d9f98d4
 # ╠═5378ee86-303b-4269-88f3-6eeccc30cb15
 # ╠═93779239-cd66-4be2-b70f-c7872a29a29f
+# ╠═8fef40e0-4528-4224-9d9e-6e306b626f7d
 # ╠═608363b0-5f75-45c8-8970-5170489a5eeb
 # ╠═59eed207-e138-44be-a241-d4cbfde0f38c
 # ╠═7b5558e7-30c8-4069-9175-6dd79d27c8f5
 # ╠═564d77df-85c1-406a-8964-3b14fca6328c
-# ╠═4f3ea277-b1b7-4cc6-a771-dd35d0c3c611
 # ╠═b7d6736b-776e-49d1-ae18-4a64b07a1a24
+# ╠═3c47c725-8751-4088-bc99-39c3cc653377
 # ╠═096a8a27-ddad-4534-94e4-71f755d5f561
 # ╠═bb6602f4-927e-473e-b8da-957395ed7617
 # ╠═e006827b-2f8b-4b7a-9669-2fb64fadc129
-# ╠═3ed8e1da-6ac1-48fa-ab1d-8272025d5aad
-# ╠═42a12287-4469-465c-9626-20de6708ce38
-# ╠═930cdb5c-f80e-4f1e-b745-fbc42e7a47d7
 # ╠═bbb80aa6-096c-4fae-bc1d-2e2f5ba28b2d
 # ╠═4fb91714-4412-49c3-b466-8ac3ee439047
 # ╠═7c0f7137-a868-41a9-831d-6298189d27e4
@@ -574,8 +635,10 @@ end
 # ╠═c8bca677-24d5-4bcc-b881-e0f43f208ca9
 # ╠═f099a171-e1ba-4d74-87a3-010e0e9ff27a
 # ╠═1beac01f-b80b-4ed9-9e04-6581f9e2c003
-# ╠═1a1d3f1f-421e-42f5-9eff-24915c2b8c5f
+# ╠═2598323d-8e4b-4789-8f77-97cc99b94b29
+# ╠═0711bfc1-4337-4ae4-a5b0-c7b08dae2190
 # ╠═78baeae1-36cb-47a4-b82a-fba776e19635
+# ╠═60fe0f3c-89e0-4996-8af6-7424b772cefa
 # ╠═a18df247-d38f-4def-b56f-7b025ca57e2f
 # ╠═ef5320bf-0b65-45da-9a9b-7c52dca56733
 # ╠═e3d59361-1d40-41dd-88b7-4cddcdf69d79
