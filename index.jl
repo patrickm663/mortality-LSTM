@@ -10,9 +10,9 @@ begin
 	using Pkg
 	cd(".")
 	Pkg.activate(".")
-	#Pkg.add(url="https://github.com/patrickm663/HMD.jl")
-	#Pkg.add(name="Turing", version="0.34.1")
-	#Pkg.add(["CSV", "DataFrames", "Lux", "ADTypes", "Zygote", "Optimisers", "Plots", "ComponentArrays", "Distributions", "Functors", "Tracker", "StatsPlots", "SciMLSensitivity", "OrdinaryDiffEqTsit5"])
+	Pkg.add(url="https://github.com/patrickm663/HMD.jl")
+	Pkg.add(name="Turing", version="0.34.1")
+	Pkg.add(["CSV", "DataFrames", "Lux", "ADTypes", "Zygote", "Optimisers", "Plots", "ComponentArrays", "Distributions", "Functors", "Tracker", "StatsPlots", "SciMLSensitivity", "OrdinaryDiffEqTsit5"])
 end
 
 # ╔═╡ ef51c95e-d5ad-455a-9631-094823b695bb
