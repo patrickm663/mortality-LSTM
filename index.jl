@@ -61,8 +61,7 @@ function LSTM(in_dims, hidden_dims, out_dims; depth=1, cell=LSTMCell)
 	if depth == 1
 		return Chain(
 			Recurrence(cell(in_dims => hidden_dims); return_sequence=false),
-
-Dense(hidden_dims => 2, swish)
+Dense(hidden_dims => 2, swish),
 Dense(2 => out_dims, identity)
 		)
 	elseif depth == 2
