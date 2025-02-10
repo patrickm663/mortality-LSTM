@@ -31,14 +31,14 @@ begin
 	τ₀ = 3
 	τ₁ = 8
 	T = 10
-	NN_depth = 4
-	cell = GRUCell #LSTMCell
+	NN_depth = 1
+	cell = LSTMCell
 	act = swish
 	list_of_countries = HMD.get_countries()
 	country = list_of_countries["Luxembourg"]
 	lr = 0.01
 	opt = Adam(lr)#NAdam(lr)
-	model_type = "NN"
+	model_type = "LSTM"
 	# Hard-code
 	if model_type == "NN"
 		τ₀ = 2
@@ -61,7 +61,9 @@ function LSTM(in_dims, hidden_dims, out_dims; depth=1, cell=LSTMCell)
 	if depth == 1
 		return Chain(
 			Recurrence(cell(in_dims => hidden_dims); return_sequence=false),
-			Dense(hidden_dims => out_dims, identity)
+
+Dense(hidden_dims => 2, swish)
+Dense(2 => out_dims, identity)
 		)
 	elseif depth == 2
 		return Chain(
@@ -322,7 +324,7 @@ begin
 	
 	ad_rule = AutoZygote()
 
-	n_epochs = 10_000 # Max epochs
+	n_epochs = 500 # Max epochs
 	@time tstate, train_losses, valid_losses = main(tstate, ad_rule, (X_train, y_train), n_epochs; early_stopping=true)
 end
 
