@@ -17,7 +17,10 @@ end
 
 # ╔═╡ ef51c95e-d5ad-455a-9631-094823b695bb
 # ╠═╡ show_logs = false
-using ADTypes, Lux, Optimisers, Printf, Random, CSV, Plots, DataFrames, ComponentArrays, HMD, Zygote, Statistics, Distributions, Functors, Turing, Tracker, LinearAlgebra, StatsPlots, SciMLSensitivity, OrdinaryDiffEqTsit5#, Mooncake
+using ADTypes, Lux, Optimisers, Printf, Random, CSV, Plots, DataFrames, ComponentArrays, HMD, Zygote, Statistics, Distributions, Functors, Turing, Tracker, LinearAlgebra, StatsPlots, AbstractGPs, KernelFunctions#, Mooncake
+
+# ╔═╡ c7be5546-4fe0-45ec-8545-b6227069e6fa
+using ReverseDiff
 
 # ╔═╡ f6696102-2894-4d54-be66-32004ea6486d
 Turing.setprogress!(true);
@@ -38,8 +41,9 @@ begin
 	cell = LSTMCell #GRUCell
 	act = swish
 	list_of_countries = HMD.get_countries()
-	country = list_of_countries["Luxembourg"]
-	p_ = 1.0
+	country = list_of_countries["Italy"]
+	gender_ = :Male
+	p_ = 0.005
 	lr = 0.001
 	opt = Adam(lr)#NAdam(lr)
 	model_type = "NN"
@@ -106,6 +110,7 @@ function CNN(out_dims, hidden_dims)
 end
 
 # ╔═╡ 8fef40e0-4528-4224-9d9e-6e306b626f7d
+#=
 function NNODE(in_dims, hidden_dims, out_dims; sensealg=InterpolatingAdjoint(; autojacvec=ZygoteVJP()), dropout_p=0.0f0)
 # Source: https://lux.csail.mit.edu/stable/tutorials/intermediate/1_NeuralODE
 	
@@ -137,6 +142,7 @@ function NNODE(in_dims, hidden_dims, out_dims; sensealg=InterpolatingAdjoint(; a
             abstol=1.0f-3, save_start=false, sensealg),
         Base.Fix1(diffeqsol_to_array, out_dim))
 end
+=#
 
 # ╔═╡ 99851338-fed0-4963-90e0-dc09bb3d480f
 function GompertzNN(hidden_dims; show_intermediate=false)
@@ -401,20 +407,23 @@ end
 # ╔═╡ fb46cbe5-dbde-4ca5-b500-10e4ff5106af
 function HeligmanPollardNN(hidden_dims; show_intermediate=false)
 	
-	function HeligmanPollard(model::Lux.AbstractLuxLayer, show_intermediate::Bool)
-		return @compact(; model, show_intermediate) do x
+	function HeligmanPollard(model₁::Lux.AbstractLuxLayer, model₂::Lux.AbstractLuxLayer, show_intermediate::Bool)
+		return @compact(; model₁, model₂, show_intermediate) do x
 			# HP: qx/(1-qx) = A^(x+B)^c + D*exp(-E(log(x/F))^2) + GH^x
 			year = reshape(x[1, :], 1, :)
 			age = ((x[2, :]) .* s_age) .+ m_age
-			year_params = model(year)
-			A = year_params[1, :]
-			B = year_params[2, :]
-			C = year_params[3, :]
-			D = year_params[4, :]
-			E = year_params[5, :]
-			F = year_params[6, :]
-			G = year_params[7, :]
-			H = year_params[8, :]
+			
+			bounded_year_params = model₁(year)
+			A = bounded_year_params[1, :]
+			B = bounded_year_params[2, :]
+			C = bounded_year_params[3, :]
+			D = bounded_year_params[4, :]
+			F = (bounded_year_params[5, :] .* 95.0) .+ 15.0 # bound to 15-110
+			G = bounded_year_params[6, :]
+
+			unbounded_year_params = model₂(year)
+			E = unbounded_year_params[1, :]
+			H = unbounded_year_params[2, :]
 
 			HP = A .^ ((age .+ B) .^ C) .+ D .* exp.(-E .* (log.(age ./ F)) .^ 2) .+ (G .* (H .^ age))
 			
@@ -429,14 +438,21 @@ function HeligmanPollardNN(hidden_dims; show_intermediate=false)
 		end
 	end
 	
-	year_NN =  Chain(
+	NN_1 =  Chain(
 				Dense(1 => hidden_dims, tanh), 
 				Dense(hidden_dims => hidden_dims, tanh),
 				Dense(hidden_dims => hidden_dims, tanh),
-				Dense(hidden_dims => 8, softplus)
+				Dense(hidden_dims => 6, σ)
+	)
+	
+	NN_2 =  Chain(
+				Dense(1 => hidden_dims, tanh), 
+				Dense(hidden_dims => hidden_dims, tanh),
+				Dense(hidden_dims => hidden_dims, tanh),
+				Dense(hidden_dims => 2, exp)
 	)
 
-	return HeligmanPollard(year_NN, show_intermediate)
+	return HeligmanPollard(NN_1, NN_2, show_intermediate)
 end
 
 # ╔═╡ b046da21-63a9-4556-ab7b-24e1c8f629e0
@@ -475,7 +491,7 @@ function FNN(in_dims, hidden_dims, out_dims; depth=2, act=tanh, outer_act=identi
 end
 
 # ╔═╡ 59eed207-e138-44be-a241-d4cbfde0f38c
-function get_data(country; T=10, τ₀=3, start_year=start_year, end_year=end_year, _format="LSTM", min_max_scale=true, start_age=start_age, end_age=end_age, p_=0.75)
+function get_data(country; T=10, τ₀=3, start_year=start_year, end_year=end_year, _format="LSTM", min_max_scale=true, start_age=start_age, end_age=end_age, p_=0.75, gender=:Female)
 	# Apply 'Toy example' data pre-processing
 	
     # Load from CSV
@@ -504,21 +520,21 @@ function get_data(country; T=10, τ₀=3, start_year=start_year, end_year=end_ye
 		end
 	end
 
-	leftjoin!(TEST, data_[(start_age .≤ data_.Age .≤ end_age) .&& (start_year .≤ data_.Year .≤ extended_forecast_year), [:Year, :Age, :Female]], on = [:Year, :Age])
+	leftjoin!(TEST, data_[(start_age .≤ data_.Age .≤ end_age) .&& (start_year .≤ data_.Year .≤ extended_forecast_year), [:Year, :Age, gender]], on = [:Year, :Age])
 
 	TEST = coalesce.(TEST, 0.0)
 
 	for i ∈ 1:size(TEST)[1]
-		if TEST.Female[i] == 0
-			TEST.Female[i] = 0
+		if TEST[i, gender] == 0
+			TEST[i, gender] = 0
 		else
-			TEST.Female[i] = log(TEST.Female[i])
+			TEST[i, gender] = log(TEST[i, gender])
 		end
 	end
 
 	sort!(TEST, )
 
-	data = data_[(start_age .≤ data_.Age .≤ end_age) .&& (start_year .≤ data_.Year .≤ end_year), [:Year, :Age, :Female]]
+	data = data_[(start_age .≤ data_.Age .≤ end_age) .&& (start_year .≤ data_.Year .≤ end_year), [:Year, :Age, gender]]
 
 	d_sample = rand(Xoshiro(321), Bernoulli(p_), size(data)[1])
 
@@ -539,7 +555,7 @@ function get_data(country; T=10, τ₀=3, start_year=start_year, end_year=end_ye
 	if _format == "LSTM"
 	
 		# Group age x year and drop the age column (1)
-		data = HMD.transform(data, :Female)[:, 2:end]
+		data = HMD.transform(data, gender)[:, 2:end]
 		data = coalesce.(data, 0.0)
 	
 		# Get average mortality per age
@@ -594,7 +610,7 @@ function get_data(country; T=10, τ₀=3, start_year=start_year, end_year=end_ye
 	elseif _format == "NN"
 		# Drop missing from training set and validation sets
 		# But retain it for a final X test set
-		data = data[data.Female .> 0, :]
+		data = data[data[:, gender] .> 0, :]
 		
 		train = data[data.Year .< end_year, :]
 		valid = data[data.Year .≥ end_year, :]
@@ -640,7 +656,7 @@ function get_data(country; T=10, τ₀=3, start_year=start_year, end_year=end_ye
 
 	elseif _format == "CNN"
 		# Group age x year and drop the age column (1)
-		data = HMD.transform(data, :Female)
+		data = HMD.transform(data, gender)
 		data = coalesce.(data[:, 2:end], 0.0)
 	
 		# Get average mortality per age
@@ -703,9 +719,9 @@ end
 
 # ╔═╡ 7b5558e7-30c8-4069-9175-6dd79d27c8f5
 if model_type == "NN"
-	X_train, y_train, X_valid, y_valid, TEST = get_data(country; T=T, τ₀=τ₀, _format=model_type,  min_max_scale=false, start_year=start_year, p_=p_)
+	X_train, y_train, X_valid, y_valid, TEST = get_data(country; T=T, τ₀=τ₀, _format=model_type,  min_max_scale=false, start_year=start_year, p_=p_, gender=gender_)
 else
-	X_train, y_train, X_valid, y_valid, x_1, x_2, y_test = get_data(country; T=T, τ₀=τ₀, _format=model_type,  min_max_scale=false, start_year=start_year, p_=p_)
+	X_train, y_train, X_valid, y_valid, x_1, x_2, y_test = get_data(country; T=T, τ₀=τ₀, _format=model_type,  min_max_scale=false, start_year=start_year, p_=p_, gender=gender_)
 end
 
 # ╔═╡ d12da7dd-e186-4329-939e-92cd8702f2e6
@@ -753,11 +769,11 @@ begin
 		#discrete_model = GompertzNN(τ₁)
 		#discrete_model = LeeCarterNN(τ₁)
 		#discrete_model = SilerNN(τ₁)
-		#discrete_model = HeligmanPollardNN(τ₁)
+		discrete_model = HeligmanPollardNN(τ₁)
 		#discrete_model = CairnsBlakeDowdNN(τ₁)
 		#discrete_model = GMNN(τ₁)
 		#discrete_model = CairnsBlakeDowd2NN(τ₁)
-		discrete_model = classicNN(τ₁)
+		#discrete_model = classicNN(τ₁)
 		#discrete_model = LocalGLMNetNN(τ₁)
 	elseif model_type == "LSTM"
 		discrete_model = LSTM(τ₀, τ₁, 1; depth=NN_depth, cell=cell)
@@ -860,13 +876,13 @@ end
 if model_type == "NN"
 	#BNN_arch = FNN(τ₀, τ₁, 1; depth=NN_depth, act=act, outer_act=identity)
 	#BNN_arch = GompertzNN(τ₁)
-	BNN_arch = LeeCarterNN(τ₁)
+	#BNN_arch = LeeCarterNN(τ₁)
 	#BNN_arch = SilerNN(τ₁)
 	#BNN_arch = HeligmanPollardNN(τ₁)
 	#BNN_arch = CairnsBlakeDowdNN(τ₁)
 	#BNN_arch = GMNN(τ₁)
 	#BNN_arch = CairnsBlakeDowd2NN(τ₁)
-	#BNN_arch = classicNN(τ₁)
+	BNN_arch = classicNN(τ₁)
 	#BNN_arch = LocalGLMNetNN(τ₁)
 elseif model_type == "LSTM"
 	BNN_arch = LSTM(τ₀, τ₁, 1; depth=NN_depth, cell=cell)
@@ -877,7 +893,7 @@ end
 
 # ╔═╡ 0711bfc1-4337-4ae4-a5b0-c7b08dae2190
 begin
-	N_samples = 500
+	N_samples = 50
 	half_N_samples = min(50, Int(N_samples/2))
 end
 
@@ -942,16 +958,6 @@ StatsPlots.plot(chains[half_N_samples:end, 1:75:end, :])
 
 # ╔═╡ 78ba02f4-6564-419c-8e09-7d0c0374a52c
 map_estimate
-
-# ╔═╡ 1d1d3579-aaa7-4e44-a5a5-9b0fa0614d54
-md"""
-$$\log\big(\mu(x,t)\big) = \alpha(x) + \beta(x)\kappa(t)$$
-$$\log\big(\mu(x,t,p)\big) = \text{NN}\big(x,t,p\big)$$
-$$\log\big(\mu(x,t,p)\big) = \alpha(x, p) + \beta(x, p)\kappa(t, p) + \text{NN}\big(x,t,p\big)$$
-$$\text{where: } \alpha(x, p),\beta(x, p) = \text{NN}_{1}\big(x,p\big)$$
-$$\text{and: } \kappa(t, p) = \text{NN}_{2}\big(t,p\big)$$
-$$\text{Discovered Dynamics: } \text{NN}\big(x,t,p\big) \approx \gamma\beta_{1}(x, p)^2 + \beta_{2}(p)\beta_{3}(t)$$
-"""
 
 # ╔═╡ ef5320bf-0b65-45da-9a9b-7c52dca56733
 describe(chains)
@@ -1085,14 +1091,14 @@ begin
 		
 		median_pred, lb_pred, ub_pred = predict(BNN_arch, X_test_valid, chains, ps_BNN, st_BNN, 1_000)
 
-		@info "MSE Training Set: $(1e4 * mean((exp.(TEST[TEST.Year .< end_year .&& TEST.Female .< 0, :Female]) .- exp.(predict(BNN_arch, Matrix(TEST[TEST.Year .< end_year .&& TEST.Female .< 0, ["Year_std", "Age_std"]])', chains, ps_BNN, st_BNN, 1_000)[1])) .^ 2))×10e-4"
-		@info "MSE Testing Set: $(1e4 * mean((exp.(TEST[end_year .≤ TEST.Year .< forecast_year .&& TEST.Female .< 0, :Female]) .- exp.(predict(BNN_arch, Matrix(TEST[end_year .≤ TEST.Year .< forecast_year .&& TEST.Female .< 0, ["Year_std", "Age_std"]])', chains, ps_BNN, st_BNN, 1_000)[1])) .^ 2))×10e-4"
+		@info "MSE Training Set: $(1e4 * mean((exp.(TEST[TEST.Year .< end_year .&& TEST[:, gender_]  .< 0, gender_]) .- exp.(predict(BNN_arch, Matrix(TEST[TEST.Year .< end_year .&& TEST[:, gender_]  .< 0, ["Year_std", "Age_std"]])', chains, ps_BNN, st_BNN, 1_000)[1])) .^ 2))×10e-4"
+		@info "MSE Testing Set: $(1e4 * mean((exp.(TEST[end_year .≤ TEST.Year .< forecast_year .&& TEST[:, gender_]  .< 0, gender_]) .- exp.(predict(BNN_arch, Matrix(TEST[end_year .≤ TEST.Year .< forecast_year .&& TEST[:, gender_]  .< 0, ["Year_std", "Age_std"]])', chains, ps_BNN, st_BNN, 1_000)[1])) .^ 2))×10e-4"
 		
 		#plot!(start_age:end_age, vec(y_pred_test), label="Predicted: ADAM", width=2, color=:blue)
 		plot!(start_age:end_age, vec(median_pred), label="Predicted: BNN Median", width=2, color=:red)
 		plot!(start_age:end_age, lb_pred, fillrange=ub_pred, label="Predicted: BNN 95% CI", width=0.9, color=:red, alpha=0.2)
-		scatter!(TEST[TEST.Year .== end_year .&& TEST.Female .< 0, :Age], TEST[TEST.Year .== end_year .&& TEST.Female .< 0, :Female], label="Actual: Complete", color=:orange)
-		scatter!(TEST[TEST.Year .== end_year .&& TEST.Observed .== 1 .&& TEST.Female .< 0, :Age], TEST[TEST.Year .== end_year .&& TEST.Observed .== 1 .&& TEST.Female .< 0, :Female], label="Actual: Observed", color=:black)
+		scatter!(TEST[TEST.Year .== end_year .&& TEST[:, gender_]  .< 0, :Age], TEST[TEST.Year .== end_year .&& TEST[:, gender_]  .< 0, gender_], label="Actual: Complete", color=:orange)
+		scatter!(TEST[TEST.Year .== end_year .&& TEST.Observed .== 1 .&& TEST[:, gender_]  .< 0, :Age], TEST[TEST.Year .== end_year .&& TEST.Observed .== 1 .&& TEST[:, gender_]  .< 0, gender_], label="Actual: Observed", color=:black)
 	elseif model_type == "LSTM"
 		#start_age = τ₀ - 2
 		
@@ -1122,28 +1128,28 @@ end
 begin
 	forecast_year_ = 1990
 	if model_type ≠ "NN"
-		plot(title="Year $forecast_year_: $(country)\n τ₀=$τ₀, τ₁=$τ₁, T=$T, cell=$cell, depth=$NN_depth", xlab="Year", ylab="log μ", legend=:topleft)
+		plot(title="Year $forecast_year_: $(country)\n τ₀=$τ₀, τ₁=$τ₁, T=$T, cell=$cell, depth=$NN_depth, gender=$gender_", xlab="Year", ylab="log μ", legend=:topleft)
 
 		median_forecast, lb_forecast, ub_forecast = predict(BNN_arch, X_valid, chains, ps_BNN, st_BNN, (extended_forecast_year-end_year+1), x_1, x_2, standardise, 1_000)
 		
 		plot!(start_age:end_age, vec(forecast[forecast_year_-end_year+1, :]'), label="Forecast: $opt", color=:blue, width=2)
 		plot!(start_age:end_age, vec(median_forecast[forecast_year_-end_year+1, :]'), label="Forecast: BNN Median", color=:red, width=2)
 		plot!(start_age:end_age, vec(lb_forecast[forecast_year_-end_year+1, :]'), fillrange=vec(ub_forecast[forecast_year_-end_year+1, :]'), label="Forecast: BNN 95% CI", color=:red, width=0.9, alpha=0.2)
-		scatter!(y_test[y_test.Year .== forecast_year_, :Age], y_test[y_test.Year .== forecast_year_, :Female], label="Actual", color=:orange)
+		scatter!(y_test[y_test.Year .== forecast_year_, :Age], y_test[y_test.Year .== forecast_year_, gender_], label="Actual", color=:orange)
 	else
 		X_test_forecast = Matrix(TEST[TEST.Year .== forecast_year_, ["Year_std", "Age_std"]])'
 		y_pred_forecast = predict(tstate, X_test_forecast)
 		
 		#plot(title="Forecast (Year $forecast_year_): $(country)\n τ₁=$τ₁, act=$act, FNN, depth=$NN_depth", xlab="Age", ylab="log μ", legend=:best, ylim=(-12.0, 0.0))
-		plot(title="Year $forecast_year_: $(country)\n Lee-Carter NN", xlab="Age", ylab="log μ", legend=:best)#, ylim=(-12.0, 0.0))
+		plot(title="Year $forecast_year_: $(country)\n Lee-Carter NN, gender=$gender_", xlab="Age", ylab="log μ", legend=:best)#, ylim=(-12.0, 0.0))
 		
 		median_forecast, lb_forecast, ub_forecast = predict(BNN_arch, X_test_forecast, chains, ps_BNN, st_BNN, 1_000)
 
 		plot!(start_age:end_age, vec(median_forecast), label="Predicted: BNN Median", width=2, color=:red)
 		plot!(start_age:end_age, vec(lb_forecast), fillrange=vec(ub_forecast), label="Forecast: BNN 95% CI", color=:red, width=0.9, alpha=0.2)
 		#plot!(start_age:end_age, vec(y_pred_test), label="Predicted: $opt", width=2, color=:blue)
-		scatter!(TEST[TEST.Year .== forecast_year_ .&& TEST.Female .< 0, :Age], TEST[TEST.Year .== forecast_year_ .&& TEST.Female .< 0, :Female], label="Actual: Complete", color=:orange)
-		scatter!(TEST[TEST.Year .== forecast_year_ .&& TEST.Observed .== 1 .&& TEST.Female .< 0, :Age], TEST[TEST.Year .== forecast_year_ .&& TEST.Observed .== 1 .&& TEST.Female .< 0, :Female], label="Actual: Observed", color=:black)
+		scatter!(TEST[TEST.Year .== forecast_year_ .&& TEST[:, gender_] .< 0, :Age], TEST[TEST.Year .== forecast_year_ .&& TEST[:, gender_] .< 0, gender_], label="Actual: Complete", color=:orange)
+		scatter!(TEST[TEST.Year .== forecast_year_ .&& TEST.Observed .== 1 .&& TEST[:, gender_]  .< 0, :Age], TEST[TEST.Year .== forecast_year_ .&& TEST.Observed .== 1 .&& TEST[:, gender_]  .< 0, gender_], label="Actual: Observed", color=:black)
 	end
 end
 
@@ -1173,8 +1179,8 @@ begin
 		#plot!(start_year:extended_forecast_year, y_pred_forecast_, label="Forecast: $opt", color=:blue, width=2)
 		plot!(max(start_year, TEST.Year[1]):extended_forecast_year, median_forecast2, label="Forecast: BNN Median", color=:red, width=2)
 		plot!(max(start_year, TEST.Year[1]):extended_forecast_year, lb_forecast2, fillrange=ub_forecast2, label="Forecast: BNN 95% CI", color=:red, width=0.9, alpha=0.2)
-		scatter!(TEST[TEST.Age .== forecast_age .&& TEST.Female .< 0, :Year], TEST[TEST.Age .== forecast_age .&& TEST.Female .< 0, :Female], label="Actual: Complete", color=:orange)
-		scatter!(TEST[TEST.Age .== forecast_age .&& TEST.Observed .== 1 .&& TEST.Female .< 0, :Year], TEST[TEST.Age .== forecast_age .&& TEST.Observed .== 1 .&& TEST.Female .< 0, :Female], label="Actual: Observed", color=:black)
+		scatter!(TEST[TEST.Age .== forecast_age .&& TEST[:, gender_]  .< 0, :Year], TEST[TEST.Age .== forecast_age .&& TEST[:, gender_]  .< 0, gender_], label="Actual: Complete", color=:orange)
+		scatter!(TEST[TEST.Age .== forecast_age .&& TEST.Observed .== 1 .&& TEST[:, gender_]  .< 0, :Year], TEST[TEST.Age .== forecast_age .&& TEST.Observed .== 1 .&& TEST[:, gender_]  .< 0, gender_], label="Actual: Observed", color=:black)
 	end
 end
 
@@ -1240,6 +1246,50 @@ heatmap((predict__(BNN_arch_, X_test_forecast___, chains, ps_BNN, st_BNN, 1_000,
 # ╔═╡ ea49af3a-d66d-4c0f-8660-9c5b4bbc6087
 heatmap((median_forecast2__ * exp.(median_forecast2_)')', xlab="Age", ylab="Time")
 
+# ╔═╡ dbda01f1-f36d-4582-87f5-affe42d840b1
+function GP_model()
+	@model function gp_nd(X, y)
+	    # Get the number of input dimensions from the data
+	    n_dims = size(X, 1)
+	
+	    # --- Priors ---
+	    # Prior for n lengthscales, one for each input dimension (ARD)
+	    l ~ MvLogNormal(zeros(n_dims), ones(n_dims))
+	
+	    # Prior for the kernel variance (scalar, doesn't change)
+	    σ_f ~ LogNormal(0.0, 1.0)
+	
+	    # Prior for the observation noise (scalar, doesn't change)
+	    σ_n ~ LogNormal(0.0, 1.0)
+	
+	    # --- Model construction ---
+	    # Construct the kernel with n lengthscales
+	    kernel = σ_f^2 * with_lengthscale(SqExponentialKernel(), l)
+	
+	    # Construct the GP
+	    gp = GP(kernel)
+	
+	    # Define the likelihood
+	    y ~ gp(X, (σ_n^2) * I)
+	end
+
+	GP_inference = gp_nd(X_train |> f64, vec(y_train |> f64))
+
+	ad = AutoTracker()
+	#ad = AutoReverseDiff()
+	sampling_alg = NUTS(0.9; adtype=ad)
+
+	chains = sample(Xoshiro(22), GP_inference, sampling_alg, N_samples; discard_adapt=false)
+
+	return chains
+end
+
+# ╔═╡ adc162e2-74d3-4e46-aea3-1cb0ef0fe532
+gp_model = GP_model()
+
+# ╔═╡ f89610b6-1075-4857-8b87-2d546ed918ad
+
+
 # ╔═╡ Cell order:
 # ╠═6264e41e-e179-11ef-19c1-f135e97db7cc
 # ╠═ef51c95e-d5ad-455a-9631-094823b695bb
@@ -1291,7 +1341,6 @@ heatmap((median_forecast2__ * exp.(median_forecast2_)')', xlab="Age", ylab="Time
 # ╠═60fe0f3c-89e0-4996-8af6-7424b772cefa
 # ╠═a18df247-d38f-4def-b56f-7b025ca57e2f
 # ╠═78ba02f4-6564-419c-8e09-7d0c0374a52c
-# ╠═1d1d3579-aaa7-4e44-a5a5-9b0fa0614d54
 # ╠═ef5320bf-0b65-45da-9a9b-7c52dca56733
 # ╠═e3d59361-1d40-41dd-88b7-4cddcdf69d79
 # ╠═c3ce3d5f-1fd7-4523-9184-1a51eba6a75f
@@ -1310,3 +1359,7 @@ heatmap((median_forecast2__ * exp.(median_forecast2_)')', xlab="Age", ylab="Time
 # ╠═bc381caa-73a3-4203-8742-0051e44a0464
 # ╠═ab54a223-999e-424a-89bf-c66c629bd21b
 # ╠═ea49af3a-d66d-4c0f-8660-9c5b4bbc6087
+# ╠═dbda01f1-f36d-4582-87f5-affe42d840b1
+# ╠═c7be5546-4fe0-45ec-8545-b6227069e6fa
+# ╠═adc162e2-74d3-4e46-aea3-1cb0ef0fe532
+# ╠═f89610b6-1075-4857-8b87-2d546ed918ad
