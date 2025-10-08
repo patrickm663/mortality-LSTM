@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.20.13
+# v0.20.19
 
 using Markdown
 using InteractiveUtils
@@ -19,20 +19,17 @@ end
 # ╠═╡ show_logs = false
 using ADTypes, Lux, Optimisers, Printf, Random, CSV, Plots, DataFrames, ComponentArrays, HMD, Zygote, Statistics, Distributions, Functors, Turing, Tracker, LinearAlgebra, StatsPlots, AbstractGPs, KernelFunctions#, Mooncake
 
-# ╔═╡ c7be5546-4fe0-45ec-8545-b6227069e6fa
-using ReverseDiff
-
 # ╔═╡ f6696102-2894-4d54-be66-32004ea6486d
 Turing.setprogress!(true);
 
 # ╔═╡ 50b3b576-d941-4609-8469-6de51cfa1545
 begin
 	start_year = 1950
-	end_year = 2001
+	end_year = 2000
 	forecast_year = 2016
 	extended_forecast_year = 2065
 	start_age = 0
-	end_age = 100
+	end_age = 99
 	age_length = length(start_age:end_age)
 	τ₀ = 3
 	τ₁ = 8
@@ -41,9 +38,9 @@ begin
 	cell = LSTMCell #GRUCell
 	act = swish
 	list_of_countries = HMD.get_countries()
-	country = list_of_countries["Italy"]
+	country = list_of_countries["Sweden"]
 	gender_ = :Male
-	p_ = 0.005
+	p_ = 0.075
 	lr = 0.001
 	opt = Adam(lr)#NAdam(lr)
 	model_type = "NN"
@@ -62,7 +59,7 @@ list_of_countries
 # ╔═╡ 5378ee86-303b-4269-88f3-6eeccc30cb15
 begin
 	min_max(x, xmin, xmax) = 2*(x - xmin) / (xmax - xmin) - 1
-	standardise(x, x_mu, x_sigma) = (x - x_mu) / x_sigma
+	standardise(x, x_mu, x_sigma) = (x - x_mu) / (x_sigma + 1e-6)
 end
 
 # ╔═╡ 93779239-cd66-4be2-b70f-c7872a29a29f
@@ -346,7 +343,7 @@ function LocalGLMNetNN(hidden_dims; show_intermediate=false)
 			# LocalGLMNet: h(x) = β₀ + β₁(x)*x + β₂(t)*t
 			xs_year = reshape(x[1, :], 1, :)
 			xs_age = reshape(x[2, :], 1, :)
-			_const = xs_year ./ xs_year # Create a vector of 1s
+			_const = reshape(xs_year ./ xs_year, 1, :) # Create a vector of 1s
 			year = x[1, :]
 			age = x[2, :]
 			params_= model(vcat(_const, xs_age, xs_year))
@@ -356,7 +353,7 @@ function LocalGLMNetNN(hidden_dims; show_intermediate=false)
 			if show_intermediate
 				@return year_params
 			else
-				@return (α .+ β₁ .* age + β₂ .* year) |> vec
+				@return (α .+ (β₁ .* year) .+ (β₂ .* age)) |> vec
 			end
 		end
 	end
@@ -765,11 +762,11 @@ end
 # ╔═╡ b7d6736b-776e-49d1-ae18-4a64b07a1a24
 begin
 	if model_type == "NN"
-		#discrete_model = FNN(τ₀, τ₁, 1; depth=NN_depth, act=act, outer_act=identity)
+		discrete_model = FNN(τ₀, τ₁, 1; depth=NN_depth, act=act, outer_act=identity)
 		#discrete_model = GompertzNN(τ₁)
 		#discrete_model = LeeCarterNN(τ₁)
 		#discrete_model = SilerNN(τ₁)
-		discrete_model = HeligmanPollardNN(τ₁)
+		#discrete_model = HeligmanPollardNN(τ₁)
 		#discrete_model = CairnsBlakeDowdNN(τ₁)
 		#discrete_model = GMNN(τ₁)
 		#discrete_model = CairnsBlakeDowd2NN(τ₁)
@@ -791,7 +788,11 @@ begin
 
 	n_epochs = 2_500 # Max epochs
 	if model_type == "NN"
-		@time tstate, train_losses, valid_losses = main(tstate, ad_rule, (X_train, reshape(y_train, :, 1)), n_epochs; early_stopping=true)
+		try
+			@time tstate, train_losses, valid_losses = main(tstate, ad_rule, (X_train, reshape(y_train, :, 1)), n_epochs; early_stopping=true)
+		catch
+			@time tstate, train_losses, valid_losses = main(tstate, ad_rule, (X_train, reshape(y_train, 1, :)), n_epochs; early_stopping=true)
+		end
 	else
 		@time tstate, train_losses, valid_losses = main(tstate, ad_rule, (X_train, y_train), n_epochs; early_stopping=true)
 	end
@@ -881,8 +882,8 @@ if model_type == "NN"
 	#BNN_arch = HeligmanPollardNN(τ₁)
 	#BNN_arch = CairnsBlakeDowdNN(τ₁)
 	#BNN_arch = GMNN(τ₁)
-	#BNN_arch = CairnsBlakeDowd2NN(τ₁)
-	BNN_arch = classicNN(τ₁)
+	BNN_arch = CairnsBlakeDowd2NN(τ₁)
+	#BNN_arch = classicNN(τ₁)
 	#BNN_arch = LocalGLMNetNN(τ₁)
 elseif model_type == "LSTM"
 	BNN_arch = LSTM(τ₀, τ₁, 1; depth=NN_depth, cell=cell)
@@ -893,7 +894,7 @@ end
 
 # ╔═╡ 0711bfc1-4337-4ae4-a5b0-c7b08dae2190
 begin
-	N_samples = 50
+	N_samples = 500
 	half_N_samples = min(50, Int(N_samples/2))
 end
 
@@ -945,7 +946,7 @@ function BNN(BNN_arch, N_samples)
 	#map_estimate = maximum_a_posteriori(BNN_inference)
 
 	#chains = sample(Xoshiro(22), BNN_inference, sampling_alg, N_samples; discard_adapt=false, initial_params=map_estimate.values.array)
-	chains = sample(Xoshiro(22), BNN_inference, sampling_alg, N_samples; discard_adapt=false)
+	chains = sample(Xoshiro(22), BNN_inference, sampling_alg, MCMCThreads(), N_samples, 4; discard_adapt=false)
 
 	return chains, ps_BNN, st_BNN, 0.0#map_estimate
 end
@@ -955,9 +956,6 @@ chains, ps_BNN, st_BNN, map_estimate = BNN(BNN_arch, N_samples)
 
 # ╔═╡ a18df247-d38f-4def-b56f-7b025ca57e2f
 StatsPlots.plot(chains[half_N_samples:end, 1:75:end, :])
-
-# ╔═╡ 78ba02f4-6564-419c-8e09-7d0c0374a52c
-map_estimate
 
 # ╔═╡ ef5320bf-0b65-45da-9a9b-7c52dca56733
 describe(chains)
@@ -1094,7 +1092,7 @@ begin
 		@info "MSE Training Set: $(1e4 * mean((exp.(TEST[TEST.Year .< end_year .&& TEST[:, gender_]  .< 0, gender_]) .- exp.(predict(BNN_arch, Matrix(TEST[TEST.Year .< end_year .&& TEST[:, gender_]  .< 0, ["Year_std", "Age_std"]])', chains, ps_BNN, st_BNN, 1_000)[1])) .^ 2))×10e-4"
 		@info "MSE Testing Set: $(1e4 * mean((exp.(TEST[end_year .≤ TEST.Year .< forecast_year .&& TEST[:, gender_]  .< 0, gender_]) .- exp.(predict(BNN_arch, Matrix(TEST[end_year .≤ TEST.Year .< forecast_year .&& TEST[:, gender_]  .< 0, ["Year_std", "Age_std"]])', chains, ps_BNN, st_BNN, 1_000)[1])) .^ 2))×10e-4"
 		
-		#plot!(start_age:end_age, vec(y_pred_test), label="Predicted: ADAM", width=2, color=:blue)
+		plot!(start_age:end_age, vec(y_pred_test), label="Predicted: ADAM", width=2, color=:blue)
 		plot!(start_age:end_age, vec(median_pred), label="Predicted: BNN Median", width=2, color=:red)
 		plot!(start_age:end_age, lb_pred, fillrange=ub_pred, label="Predicted: BNN 95% CI", width=0.9, color=:red, alpha=0.2)
 		scatter!(TEST[TEST.Year .== end_year .&& TEST[:, gender_]  .< 0, :Age], TEST[TEST.Year .== end_year .&& TEST[:, gender_]  .< 0, gender_], label="Actual: Complete", color=:orange)
@@ -1126,7 +1124,7 @@ end
 
 # ╔═╡ d826f3b4-8a5f-4f99-88fb-d9b8420c6d89
 begin
-	forecast_year_ = 1990
+	forecast_year_ = 1980
 	if model_type ≠ "NN"
 		plot(title="Year $forecast_year_: $(country)\n τ₀=$τ₀, τ₁=$τ₁, T=$T, cell=$cell, depth=$NN_depth, gender=$gender_", xlab="Year", ylab="log μ", legend=:topleft)
 
@@ -1155,7 +1153,7 @@ end
 
 # ╔═╡ c1b667d2-1411-4637-9309-967309cc30e6
 begin
-	forecast_age = 40
+	forecast_age = 55
 	if model_type ≠ "NN"
 		adj_forecast_age = forecast_age + Int((3 - τ₀)/2)
 		@assert forecast_age ≥ (τ₀ + 1)/2 - 1
@@ -1246,49 +1244,107 @@ heatmap((predict__(BNN_arch_, X_test_forecast___, chains, ps_BNN, st_BNN, 1_000,
 # ╔═╡ ea49af3a-d66d-4c0f-8660-9c5b4bbc6087
 heatmap((median_forecast2__ * exp.(median_forecast2_)')', xlab="Age", ylab="Time")
 
+# ╔═╡ 38dd4c3f-ca41-47dc-9ce0-ba4edfb69a51
+begin
+	kernel_ = Matern32Kernel() + LinearKernel()
+end
+
+# ╔═╡ f2d1e8da-460a-43b0-a965-600da15fadfa
+if size(unique(X_train, dims=1), 1) != size(X_train, 1)
+    println("CRITICAL WARNING: Your training data sample contains duplicate input rows!")
+    # You might want to resample or remove duplicates here
+end
+
 # ╔═╡ dbda01f1-f36d-4582-87f5-affe42d840b1
-function GP_model()
+function GP_model(kernel_)
 	@model function gp_nd(X, y)
 	    # Get the number of input dimensions from the data
 	    n_dims = size(X, 1)
 	
 	    # --- Priors ---
 	    # Prior for n lengthscales, one for each input dimension (ARD)
-	    l ~ MvLogNormal(zeros(n_dims), ones(n_dims))
+	    log_l ~ MvNormal(zeros(n_dims), 0.5 * I)
 	
 	    # Prior for the kernel variance (scalar, doesn't change)
-	    σ_f ~ LogNormal(0.0, 1.0)
+	    σ_f ~ LogNormal(0.0, 0.5)
 	
 	    # Prior for the observation noise (scalar, doesn't change)
-	    σ_n ~ LogNormal(0.0, 1.0)
+	    σ_n ~ LogNormal(-2.0, 1.0)
 	
 	    # --- Model construction ---
 	    # Construct the kernel with n lengthscales
-	    kernel = σ_f^2 * with_lengthscale(SqExponentialKernel(), l)
+	    kernel = (σ_f^2) * with_lengthscale(kernel_, exp.(log_l))
 	
 	    # Construct the GP
 	    gp = GP(kernel)
 	
 	    # Define the likelihood
-	    y ~ gp(X, (σ_n^2) * I)
+	    y ~ gp(X, (σ_n^2) + 1e-6)
 	end
 
 	GP_inference = gp_nd(X_train |> f64, vec(y_train |> f64))
+	#GP_inference = gp_nd(rand(2, 500) |> f64, vec(rand(1, 500) |> f64))
 
-	ad = AutoTracker()
-	#ad = AutoReverseDiff()
+	#ad = AutoTracker()
+	ad = AutoForwardDiff()
 	sampling_alg = NUTS(0.9; adtype=ad)
 
-	chains = sample(Xoshiro(22), GP_inference, sampling_alg, N_samples; discard_adapt=false)
+	chains = sample(Xoshiro(202), GP_inference, sampling_alg, 2_000; discard_adapt=false)
 
 	return chains
 end
 
 # ╔═╡ adc162e2-74d3-4e46-aea3-1cb0ef0fe532
-gp_model = GP_model()
+gp_model = GP_model(kernel_)
 
 # ╔═╡ f89610b6-1075-4857-8b87-2d546ed918ad
+describe(gp_model)
 
+# ╔═╡ 5efd6c9b-c149-44ba-922a-1014ffe9eab8
+StatsPlots.plot(gp_model[half_N_samples:end, :, :])
+
+# ╔═╡ e35a4819-4288-437f-9cd5-a9581ec5737e
+function predict_gp(X_test_, X_train_, y_train_, s_f, s_n, l_, kern)
+	kernel = (s_f^2) * with_lengthscale(kern, l_)
+	gp_ = GP(kernel)
+	posterior_ = posterior(gp_(X_train_, (s_n^2)), y_train_)
+
+	return mean(posterior_(X_test_)), std(posterior_(X_test_))
+end
+
+# ╔═╡ 2def0485-a36b-4f96-806f-74025f2bc589
+function predict_gp(ch_gp, X_test, X_train, y_train, N_sims, kernel_)
+	posterior_samples = sample(Xoshiro(1111), ch_gp[100:end, :, :], N_sims)
+	σ_f_sample = Matrix(MCMCChains.group(posterior_samples, :σ_f).value[:, :, 1])
+	σ_n_sample = Matrix(MCMCChains.group(posterior_samples, :σ_n).value[:, :, 1])
+	l_ = exp.(Matrix(MCMCChains.group(posterior_samples, :log_l).value[:, :, 1]))
+
+	p_v = [predict_gp(X_test, X_train, y_train, σ_f_sample[i], σ_n_sample[i], l_[i, :], kernel_)[1] for i ∈ 1:N_sims]
+	s_v = [predict_gp(X_test, X_train, y_train, σ_f_sample[i], σ_n_sample[i], l_[i, :], kernel_)[2] for i ∈ 1:N_sims]
+
+	return quantile(p_v, 0.5), quantile(p_v, 0.025), quantile(p_v, 0.975), quantile(s_v, 0.5)	
+end
+
+# ╔═╡ 1bdaa6b8-4245-4f59-8d63-00676b42623e
+begin
+	@info "MSE Training Set: $(1e4 * mean((exp.(TEST[TEST.Year .< end_year .&& TEST[:, gender_]  .< 0, gender_]) .- exp.(predict_gp(gp_model, Matrix(TEST[TEST.Year .< end_year .&& TEST[:, gender_]  .< 0, ["Year_std", "Age_std"]])', X_train, vec(y_train), 1_000, kernel_)[1])) .^ 2))×10e-4"
+	@info "MSE Testing Set: $(1e4 * mean((exp.(TEST[end_year .≤ TEST.Year .< forecast_year .&& TEST[:, gender_]  .< 0, gender_]) .- exp.(predict_gp(gp_model, Matrix(TEST[end_year .≤ TEST.Year .< forecast_year .&& TEST[:, gender_]  .< 0, ["Year_std", "Age_std"]])', X_train, vec(y_train), 1_000, kernel_)[1])) .^ 2))×10e-4"
+end
+
+# ╔═╡ de4b5788-8d8d-44e4-8152-75bdfe07b664
+begin
+	forecast_year__ = 1980
+	
+	X_test_forecast____ = Matrix(TEST[TEST.Year .== forecast_year__, ["Year_std", "Age_std"]])'
+	
+	gp_output_mean, gp_output_lb, gp_output_ub, gp_output_s = predict_gp(gp_model, X_test_forecast____, X_train, vec(y_train), 1_000, kernel_)
+	
+	plot(start_age:end_age, gp_output_mean, width=2, color=:red, label="Median", ribbon=gp_output_s)
+	plot!(start_age:end_age, gp_output_lb, fillrange=gp_output_ub, color=:red, fillalpha=0.2, label="95% CI", title="$forecast_year__")
+	scatter!(TEST[TEST.Year .== forecast_year__ .&& TEST[:, gender_] .< 0, :Age], TEST[TEST.Year .== forecast_year__ .&& TEST[:, gender_] .< 0, gender_], label="Actual: Complete", color=:orange)
+	scatter!(TEST[TEST.Year .== forecast_year__ .&& TEST.Observed .== 1 .&& TEST[:, gender_]  .< 0, :Age], TEST[TEST.Year .== forecast_year__ .&& TEST.Observed .== 1 .&& TEST[:, gender_]  .< 0, gender_], label="Actual: Observed", color=:black)
+
+end
 
 # ╔═╡ Cell order:
 # ╠═6264e41e-e179-11ef-19c1-f135e97db7cc
@@ -1340,7 +1396,6 @@ gp_model = GP_model()
 # ╠═78baeae1-36cb-47a4-b82a-fba776e19635
 # ╠═60fe0f3c-89e0-4996-8af6-7424b772cefa
 # ╠═a18df247-d38f-4def-b56f-7b025ca57e2f
-# ╠═78ba02f4-6564-419c-8e09-7d0c0374a52c
 # ╠═ef5320bf-0b65-45da-9a9b-7c52dca56733
 # ╠═e3d59361-1d40-41dd-88b7-4cddcdf69d79
 # ╠═c3ce3d5f-1fd7-4523-9184-1a51eba6a75f
@@ -1359,7 +1414,13 @@ gp_model = GP_model()
 # ╠═bc381caa-73a3-4203-8742-0051e44a0464
 # ╠═ab54a223-999e-424a-89bf-c66c629bd21b
 # ╠═ea49af3a-d66d-4c0f-8660-9c5b4bbc6087
+# ╠═38dd4c3f-ca41-47dc-9ce0-ba4edfb69a51
+# ╠═f2d1e8da-460a-43b0-a965-600da15fadfa
 # ╠═dbda01f1-f36d-4582-87f5-affe42d840b1
-# ╠═c7be5546-4fe0-45ec-8545-b6227069e6fa
 # ╠═adc162e2-74d3-4e46-aea3-1cb0ef0fe532
 # ╠═f89610b6-1075-4857-8b87-2d546ed918ad
+# ╠═5efd6c9b-c149-44ba-922a-1014ffe9eab8
+# ╠═e35a4819-4288-437f-9cd5-a9581ec5737e
+# ╠═2def0485-a36b-4f96-806f-74025f2bc589
+# ╠═1bdaa6b8-4245-4f59-8d63-00676b42623e
+# ╠═de4b5788-8d8d-44e4-8152-75bdfe07b664
