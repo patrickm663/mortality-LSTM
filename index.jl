@@ -1174,7 +1174,7 @@ end
 
 # ╔═╡ c1b667d2-1411-4637-9309-967309cc30e6
 begin
-	forecast_age = 55
+	forecast_age = 65
 	if model_type ≠ "NN"
 		adj_forecast_age = forecast_age + Int((3 - τ₀)/2)
 		@assert forecast_age ≥ (τ₀ + 1)/2 - 1
