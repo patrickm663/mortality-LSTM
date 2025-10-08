@@ -17,7 +17,7 @@ end
 
 # ╔═╡ ef51c95e-d5ad-455a-9631-094823b695bb
 # ╠═╡ show_logs = false
-using ADTypes, Lux, Optimisers, Printf, Random, CSV, Plots, DataFrames, ComponentArrays, HMD, Zygote, Statistics, Distributions, Functors, Turing, Tracker, LinearAlgebra, StatsPlots, AbstractGPs, KernelFunctions#, Mooncake
+using ADTypes, Lux, Optimisers, Printf, Random, CSV, Plots, DataFrames, ComponentArrays, HMD, Zygote, Statistics, Distributions, Functors, Turing, Tracker, LinearAlgebra, StatsPlots, AbstractGPs, KernelFunctions, AdvancedVI, Mooncake
 
 # ╔═╡ f6696102-2894-4d54-be66-32004ea6486d
 Turing.setprogress!(true);
@@ -40,7 +40,7 @@ begin
 	list_of_countries = HMD.get_countries()
 	country = list_of_countries["Sweden"]
 	gender_ = :Male
-	p_ = 0.075
+	p_ = 1.0#0.015
 	lr = 0.001
 	opt = Adam(lr)#NAdam(lr)
 	model_type = "NN"
@@ -52,6 +52,9 @@ begin
 	s_age = std(start_age:end_age)
 	m_age = mean(start_age:end_age)
 end
+
+# ╔═╡ d1eb691b-481f-45d5-b736-7f99f4b0b4d2
+sample_type = "VI"
 
 # ╔═╡ a0132c58-f427-4c88-ba45-bd8b9d9f98d4
 list_of_countries
@@ -789,12 +792,12 @@ begin
 	n_epochs = 2_500 # Max epochs
 	if model_type == "NN"
 		try
-			@time tstate, train_losses, valid_losses = main(tstate, ad_rule, (X_train, reshape(y_train, :, 1)), n_epochs; early_stopping=true)
+			@time tstate, train_losses, valid_losses = main(tstate, ad_rule, (X_train, reshape(y_train, :, 1)), n_epochs; early_stopping=false)
 		catch
-			@time tstate, train_losses, valid_losses = main(tstate, ad_rule, (X_train, reshape(y_train, 1, :)), n_epochs; early_stopping=true)
+			@time tstate, train_losses, valid_losses = main(tstate, ad_rule, (X_train, reshape(y_train, 1, :)), n_epochs; early_stopping=false)
 		end
 	else
-		@time tstate, train_losses, valid_losses = main(tstate, ad_rule, (X_train, y_train), n_epochs; early_stopping=true)
+		@time tstate, train_losses, valid_losses = main(tstate, ad_rule, (X_train, y_train), n_epochs; early_stopping=false)
 	end
 end
 
@@ -894,7 +897,7 @@ end
 
 # ╔═╡ 0711bfc1-4337-4ae4-a5b0-c7b08dae2190
 begin
-	N_samples = 500
+	N_samples = 2_500
 	half_N_samples = min(50, Int(N_samples/2))
 end
 
@@ -911,8 +914,8 @@ function BNN(BNN_arch, N_samples)
 	
 		# Priors
 		## Sample the parameters
-		#σ ~ truncated(Normal(0, 1); lower=0.4, upper=0.65)
-		σ ~ InverseGamma(12, 5.5)
+		σ ~ truncated(Normal(0, 1); lower=0.4, upper=0.65)
+		#σ ~ InverseGamma(12, 5.5)
 		α ~ Uniform(0.9, 1.0)
 		parameters ~ MvNormal(zeros(n_params), (sig^2) .* I)
 		#parameters ~ MvNormal(DNN_params, (sig^2) .* I)
@@ -937,18 +940,36 @@ function BNN(BNN_arch, N_samples)
 	else
 		BNN_inference = bayes_nn(X_train |> f64, y_train |> f64, BNN_arch, ps_BNN, sig, n_params)
 	end
-	ad = AutoTracker()
-	#ad = AutoMooncake(; config=nothing)
+	#ad = AutoTracker()
+	ad = AutoMooncake(; config=nothing)
 
 	sampling_alg = NUTS(0.9; adtype=ad)
 	#sampling_alg = HMCDA(200, 0.9, 0.3; adtype=ad)
 
 	#map_estimate = maximum_a_posteriori(BNN_inference)
 
-	#chains = sample(Xoshiro(22), BNN_inference, sampling_alg, N_samples; discard_adapt=false, initial_params=map_estimate.values.array)
-	chains = sample(Xoshiro(22), BNN_inference, sampling_alg, MCMCThreads(), N_samples, 4; discard_adapt=false)
+	if sample_type == "MCMC" 
+		#chains = sample(Xoshiro(22), BNN_inference, sampling_alg, N_samples; discard_adapt=false, initial_params=map_estimate.values.array)
+		chains = sample(Xoshiro(22), BNN_inference, sampling_alg, MCMCThreads(), N_samples, 4; discard_adapt=false)
 
-	return chains, ps_BNN, st_BNN, 0.0#map_estimate
+		return chains, ps_BNN, st_BNN, 0.0#map_estimate
+	elseif sample_type == "VI"
+		#qo = q_fullrank_gaussian(BNN_inference)
+		qo = q_meanfield_gaussian(BNN_inference)
+		q_fr, _, _, _ = vi(Xoshiro(22), BNN_inference, qo, N_samples; adtype=ad, show_progress=false)
+		z = rand(Xoshiro(22), q_fr, N_samples*4)
+		
+		varinf = Turing.DynamicPPL.VarInfo(BNN_inference)
+		vns_and_values = Turing.DynamicPPL.varname_and_value_leaves(
+			Turing.DynamicPPL.values_as(varinf, OrderedDict),
+		)
+		varnames = map(first, vns_and_values)
+
+		chains = Chains(reshape(z', (size(z, 2), size(z, 1), 1)), varnames)
+
+		return chains, ps_BNN, st_BNN, 0.0#map_estimate
+	end
+
 end
 
 # ╔═╡ 60fe0f3c-89e0-4996-8af6-7424b772cefa
@@ -958,7 +979,7 @@ chains, ps_BNN, st_BNN, map_estimate = BNN(BNN_arch, N_samples)
 StatsPlots.plot(chains[half_N_samples:end, 1:75:end, :])
 
 # ╔═╡ ef5320bf-0b65-45da-9a9b-7c52dca56733
-describe(chains)
+println(describe(chains))
 
 # ╔═╡ e3d59361-1d40-41dd-88b7-4cddcdf69d79
 # Extract all weight and bias parameters.
@@ -1295,7 +1316,7 @@ function GP_model(kernel_)
 end
 
 # ╔═╡ adc162e2-74d3-4e46-aea3-1cb0ef0fe532
-gp_model = GP_model(kernel_)
+#gp_model = GP_model(kernel_)
 
 # ╔═╡ f89610b6-1075-4857-8b87-2d546ed918ad
 describe(gp_model)
@@ -1351,6 +1372,7 @@ end
 # ╠═ef51c95e-d5ad-455a-9631-094823b695bb
 # ╠═f6696102-2894-4d54-be66-32004ea6486d
 # ╠═50b3b576-d941-4609-8469-6de51cfa1545
+# ╠═d1eb691b-481f-45d5-b736-7f99f4b0b4d2
 # ╠═a0132c58-f427-4c88-ba45-bd8b9d9f98d4
 # ╠═5378ee86-303b-4269-88f3-6eeccc30cb15
 # ╠═93779239-cd66-4be2-b70f-c7872a29a29f
