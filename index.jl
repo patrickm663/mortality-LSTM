@@ -54,7 +54,7 @@ begin
 end
 
 # ╔═╡ d1eb691b-481f-45d5-b736-7f99f4b0b4d2
-sample_type = "VI"
+sample_type = "MCMC"
 
 # ╔═╡ a0132c58-f427-4c88-ba45-bd8b9d9f98d4
 list_of_countries
@@ -897,7 +897,7 @@ end
 
 # ╔═╡ 0711bfc1-4337-4ae4-a5b0-c7b08dae2190
 begin
-	N_samples = 2_500
+	N_samples = 500
 	half_N_samples = min(50, Int(N_samples/2))
 end
 
@@ -954,8 +954,8 @@ function BNN(BNN_arch, N_samples)
 
 		return chains, ps_BNN, st_BNN, 0.0#map_estimate
 	elseif sample_type == "VI"
-		#qo = q_fullrank_gaussian(BNN_inference)
-		qo = q_meanfield_gaussian(BNN_inference)
+		qo = q_fullrank_gaussian(BNN_inference)
+		#qo = q_meanfield_gaussian(BNN_inference)
 		q_fr, _, _, _ = vi(Xoshiro(22), BNN_inference, qo, N_samples; adtype=ad, show_progress=false)
 		z = rand(Xoshiro(22), q_fr, N_samples*4)
 		
