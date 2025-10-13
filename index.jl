@@ -38,9 +38,9 @@ begin
 	cell = LSTMCell #GRUCell
 	act = swish
 	list_of_countries = HMD.get_countries()
-	country = list_of_countries["Sweden"]
+	country = list_of_countries["Italy"]
 	gender_ = :Male
-	p_ = 1.0#0.015
+	p_ = 1.0
 	lr = 0.001
 	opt = Adam(lr)#NAdam(lr)
 	model_type = "NN"
@@ -788,6 +788,7 @@ begin
 	tstate = Lux.Training.TrainState(discrete_model, ps, st, opt)
 	
 	ad_rule = AutoZygote()
+	#ad_rule = AutoMooncake()
 
 	n_epochs = 2_500 # Max epochs
 	if model_type == "NN"
@@ -880,12 +881,12 @@ end
 if model_type == "NN"
 	#BNN_arch = FNN(τ₀, τ₁, 1; depth=NN_depth, act=act, outer_act=identity)
 	#BNN_arch = GompertzNN(τ₁)
-	#BNN_arch = LeeCarterNN(τ₁)
+	BNN_arch = LeeCarterNN(τ₁)
 	#BNN_arch = SilerNN(τ₁)
 	#BNN_arch = HeligmanPollardNN(τ₁)
 	#BNN_arch = CairnsBlakeDowdNN(τ₁)
 	#BNN_arch = GMNN(τ₁)
-	BNN_arch = CairnsBlakeDowd2NN(τ₁)
+	#BNN_arch = CairnsBlakeDowd2NN(τ₁)
 	#BNN_arch = classicNN(τ₁)
 	#BNN_arch = LocalGLMNetNN(τ₁)
 elseif model_type == "LSTM"
@@ -911,13 +912,14 @@ function BNN(BNN_arch, N_samples)
 	Nloglikelihood(y_, μ_, σ_) = loglikelihood(MvNormal(μ_, (σ_^2) .* I), y_)
 
 	@model function bayes_nn(xs, ys, BNN_arch, ps_BNN, sig, n_params, ::Type{T} = Float64) where {T}
-	
+
 		# Priors
 		## Sample the parameters
-		σ ~ truncated(Normal(0, 1); lower=0.4, upper=0.65)
+		σ ~ truncated(Normal(0, 1); lower=1e-4)
 		#σ ~ InverseGamma(12, 5.5)
 		α ~ Uniform(0.9, 1.0)
-		parameters ~ MvNormal(zeros(n_params), (sig^2) .* I)
+		#parameters ~ MvNormal(zeros(n_params), (sig^2) .* I)
+		parameters ~ filldist(Laplace(0.0, (sig^2)), n_params)
 		#parameters ~ MvNormal(DNN_params, (sig^2) .* I)
 		
 		## Forward NN to make predictions
@@ -925,7 +927,6 @@ function BNN(BNN_arch, N_samples)
 	
 		## Likelihood
 		for i ∈ 1:size(ys)[2]
-			#ys[:, i] ~ MvNormal(vec(μ[:, i]), (σ^2) .* I)
 			Turing.@addlogprob! Nloglikelihood(ys[:, i], μ[:, i], σ)
 		end	
 
@@ -1125,7 +1126,7 @@ begin
 		
 		median_pred, lb_pred, ub_pred = predict(BNN_arch, X_valid, chains, ps_BNN, st_BNN, 1_000)
 		
-		plot!((start_age+1):(end_age-1), vec(y_pred_valid), label="Predicted: ADAM", width=2, color=:blue)
+		#plot!((start_age+1):(end_age-1), vec(y_pred_valid), label="Predicted: ADAM", width=2, color=:blue)
 		plot!((start_age+1):(end_age-1), vec(median_pred), label="Predicted: BNN Median", width=2, color=:red)
 		plot!((start_age+1):(end_age-1), lb_pred, fillrange=ub_pred, label="Predicted: BNN 95% CI", width=0.9, color=:red, alpha=0.2)
 		scatter!((start_age+1):(end_age-1), vec(y_valid'), label="Observed", color=:orange)
@@ -1145,7 +1146,7 @@ end
 
 # ╔═╡ d826f3b4-8a5f-4f99-88fb-d9b8420c6d89
 begin
-	forecast_year_ = 1980
+	forecast_year_ = 2007
 	if model_type ≠ "NN"
 		plot(title="Year $forecast_year_: $(country)\n τ₀=$τ₀, τ₁=$τ₁, T=$T, cell=$cell, depth=$NN_depth, gender=$gender_", xlab="Year", ylab="log μ", legend=:topleft)
 
@@ -1159,14 +1160,14 @@ begin
 		X_test_forecast = Matrix(TEST[TEST.Year .== forecast_year_, ["Year_std", "Age_std"]])'
 		y_pred_forecast = predict(tstate, X_test_forecast)
 		
-		#plot(title="Forecast (Year $forecast_year_): $(country)\n τ₁=$τ₁, act=$act, FNN, depth=$NN_depth", xlab="Age", ylab="log μ", legend=:best, ylim=(-12.0, 0.0))
+		plot(title="Forecast (Year $forecast_year_): $(country)\n τ₁=$τ₁, act=$act, FNN, depth=$NN_depth", xlab="Age", ylab="log μ", legend=:best, ylim=(-12.0, 0.0))
 		plot(title="Year $forecast_year_: $(country)\n Lee-Carter NN, gender=$gender_", xlab="Age", ylab="log μ", legend=:best)#, ylim=(-12.0, 0.0))
 		
 		median_forecast, lb_forecast, ub_forecast = predict(BNN_arch, X_test_forecast, chains, ps_BNN, st_BNN, 1_000)
 
 		plot!(start_age:end_age, vec(median_forecast), label="Predicted: BNN Median", width=2, color=:red)
 		plot!(start_age:end_age, vec(lb_forecast), fillrange=vec(ub_forecast), label="Forecast: BNN 95% CI", color=:red, width=0.9, alpha=0.2)
-		#plot!(start_age:end_age, vec(y_pred_test), label="Predicted: $opt", width=2, color=:blue)
+		plot!(start_age:end_age, vec(y_pred_test), label="Predicted: $opt", width=2, color=:blue)
 		scatter!(TEST[TEST.Year .== forecast_year_ .&& TEST[:, gender_] .< 0, :Age], TEST[TEST.Year .== forecast_year_ .&& TEST[:, gender_] .< 0, gender_], label="Actual: Complete", color=:orange)
 		scatter!(TEST[TEST.Year .== forecast_year_ .&& TEST.Observed .== 1 .&& TEST[:, gender_]  .< 0, :Age], TEST[TEST.Year .== forecast_year_ .&& TEST.Observed .== 1 .&& TEST[:, gender_]  .< 0, gender_], label="Actual: Observed", color=:black)
 	end
@@ -1195,7 +1196,7 @@ begin
 		
 		median_forecast2, lb_forecast2, ub_forecast2 = predict(BNN_arch, X_test_forecast_, chains, ps_BNN, st_BNN, 1_000)
 
-		#plot!(start_year:extended_forecast_year, y_pred_forecast_, label="Forecast: $opt", color=:blue, width=2)
+		plot!(start_year:extended_forecast_year, y_pred_forecast_', label="Forecast: $opt", color=:blue, width=2)
 		plot!(max(start_year, TEST.Year[1]):extended_forecast_year, median_forecast2, label="Forecast: BNN Median", color=:red, width=2)
 		plot!(max(start_year, TEST.Year[1]):extended_forecast_year, lb_forecast2, fillrange=ub_forecast2, label="Forecast: BNN 95% CI", color=:red, width=0.9, alpha=0.2)
 		scatter!(TEST[TEST.Age .== forecast_age .&& TEST[:, gender_]  .< 0, :Year], TEST[TEST.Age .== forecast_age .&& TEST[:, gender_]  .< 0, gender_], label="Actual: Complete", color=:orange)
@@ -1270,6 +1271,12 @@ begin
 	kernel_ = Matern32Kernel() + LinearKernel()
 end
 
+# ╔═╡ 7f4c81f4-f67e-4c50-9ca1-f60cd2f68a58
+y_train
+
+# ╔═╡ 76cf3dcd-cd9b-4522-801d-fa38c8fbb7fa
+cor([1, 2, 3])
+
 # ╔═╡ f2d1e8da-460a-43b0-a965-600da15fadfa
 if size(unique(X_train, dims=1), 1) != size(X_train, 1)
     println("CRITICAL WARNING: Your training data sample contains duplicate input rows!")
@@ -1340,10 +1347,10 @@ function predict_gp(ch_gp, X_test, X_train, y_train, N_sims, kernel_)
 	σ_n_sample = Matrix(MCMCChains.group(posterior_samples, :σ_n).value[:, :, 1])
 	l_ = exp.(Matrix(MCMCChains.group(posterior_samples, :log_l).value[:, :, 1]))
 
-	p_v = [predict_gp(X_test, X_train, y_train, σ_f_sample[i], σ_n_sample[i], l_[i, :], kernel_)[1] for i ∈ 1:N_sims]
-	s_v = [predict_gp(X_test, X_train, y_train, σ_f_sample[i], σ_n_sample[i], l_[i, :], kernel_)[2] for i ∈ 1:N_sims]
+	p_v = reshape(vcat([predict_gp(X_test, X_train, y_train, σ_f_sample[i], σ_n_sample[i], l_[i, :], kernel_)[1] for i ∈ 1:N_sims]...), :, N_sims)
+	s_v = reshape(vcat([predict_gp(X_test, X_train, y_train, σ_f_sample[i], σ_n_sample[i], l_[i, :], kernel_)[2] for i ∈ 1:N_sims]...), :, N_sims)
 
-	return quantile(p_v, 0.5), quantile(p_v, 0.025), quantile(p_v, 0.975), quantile(s_v, 0.5)	
+	return quantile.(eachrow(p_v), 0.5), quantile.(eachrow(p_v), 0.025), quantile.(eachrow(p_v), 0.975), quantile.(eachrow(s_v), 0.5)	
 end
 
 # ╔═╡ 1bdaa6b8-4245-4f59-8d63-00676b42623e
@@ -1354,7 +1361,7 @@ end
 
 # ╔═╡ de4b5788-8d8d-44e4-8152-75bdfe07b664
 begin
-	forecast_year__ = 1980
+	forecast_year__ = 2008
 	
 	X_test_forecast____ = Matrix(TEST[TEST.Year .== forecast_year__, ["Year_std", "Age_std"]])'
 	
@@ -1437,6 +1444,8 @@ end
 # ╠═ab54a223-999e-424a-89bf-c66c629bd21b
 # ╠═ea49af3a-d66d-4c0f-8660-9c5b4bbc6087
 # ╠═38dd4c3f-ca41-47dc-9ce0-ba4edfb69a51
+# ╠═7f4c81f4-f67e-4c50-9ca1-f60cd2f68a58
+# ╠═76cf3dcd-cd9b-4522-801d-fa38c8fbb7fa
 # ╠═f2d1e8da-460a-43b0-a965-600da15fadfa
 # ╠═dbda01f1-f36d-4582-87f5-affe42d840b1
 # ╠═adc162e2-74d3-4e46-aea3-1cb0ef0fe532
