@@ -25,11 +25,11 @@ Turing.setprogress!(true);
 # ╔═╡ 50b3b576-d941-4609-8469-6de51cfa1545
 begin
 	start_year = 1950
-	end_year = 2000
+	end_year = 2000#2006
 	forecast_year = 2016
 	extended_forecast_year = 2065
-	start_age = 60
-	end_age = 89
+	start_age = 0#60
+	end_age = 99#89
 	age_length = length(start_age:end_age)
 	τ₀ = 3
 	τ₁ = 8
@@ -38,7 +38,7 @@ begin
 	cell = LSTMCell #GRUCell
 	act = tanh
 	list_of_countries = HMD.get_countries()
-	country = list_of_countries["Italy"]
+	country = list_of_countries["Switzerland"]
 	gender_ = :Male
 	p_ = 1.0
 	model_type = "NN"
@@ -151,19 +151,23 @@ end
 # ╔═╡ 99851338-fed0-4963-90e0-dc09bb3d480f
 function GompertzNN(hidden_dims; show_intermediate=false, act=tanh)
 
-	function Gompertz(model::Lux.AbstractLuxLayer, show_intermediate::Bool)
+	function Gompertz(model₁::Lux.AbstractLuxLayer, model₂::Lux.AbstractLuxLayer, show_intermediate::Bool)
 		# log(mu) = log(alpha(t) + beta(t)exp(log(c(t))*x))
-		return @compact(; model, show_intermediate) do x
+		return @compact(; model₁, model₂, show_intermediate) do x
 			year = reshape(x[1, :], 1, :)
 			age = x[2, :]
-			params = model(year)
+			params = model₁(year)
 			α = params[1, :] # 0.0
 			β = params[2, :] # 1
 			c = log.(params[3, :]) # 2
+
+			age_year = vcat(year, age)
+			log_σ² = model₂(age_year) |> vec
+			
 			if show_intermediate
 				@return params
 			else
-				@return log.(α .+ β .* exp.(c .* age))
+				@return (log.(α .+ β .* exp.(c .* age)), log_σ²)
 			end
 		end
 	end
@@ -174,28 +178,38 @@ function GompertzNN(hidden_dims; show_intermediate=false, act=tanh)
 				Dense(hidden_dims => hidden_dims, act),
 				Dense(hidden_dims => 3, exp)
 	)
+	log_sigma_NN =  Chain(
+				Dense(2 => hidden_dims, act), 
+				Dense(hidden_dims => hidden_dims, act),
+				Dense(hidden_dims => hidden_dims, act),
+				Dense(hidden_dims => 1)
+	)
 
-	return Gompertz(year_NN, show_intermediate)
+	return Gompertz(year_NN, log_sigma_NN, show_intermediate)
 end
 
 # ╔═╡ 5beb9242-c2ae-4bb3-89b0-c81ff07d5ffb
 function CairnsBlakeDowdNN(hidden_dims; show_intermediate=false, act=tanh)
 
-	function CairnsBlakeDowd(model::Lux.AbstractLuxLayer, show_intermediate::Bool)
+	function CairnsBlakeDowd(model₁::Lux.AbstractLuxLayer, model₂::Lux.AbstractLuxLayer, show_intermediate::Bool)
 		# logit(q) = k1(t) + (x - x̄)*k2(t)
-		return @compact(; model, show_intermediate) do x
+		return @compact(; model₁, model₂, show_intermediate) do x
 			year = reshape(x[1, :], 1, :)
 			age = x[2, :]
-			year_params = model(year)
+			year_params = model₁(year)
 			k1 = year_params[1, :]
 			k2 = year_params[2, :] 
 			CBD_unlogit = exp.(k1 .+ age .* k2) # Age is already standardised with k2 absorbing 1/σ term
 			CBD_qx = CBD_unlogit ./ (1 .+ CBD_unlogit)
 			CBD_mx = -log.(1 .- CBD_qx)
+
+			age_year = vcat(year, age)
+			log_σ² = model₂(age_year) |> vec
+			
 			if show_intermediate
 				@return year_params
 			else
-				@return log.(CBD_mx)
+				@return (log.(CBD_mx), log_σ²)
 			end
 		end
 	end
@@ -206,16 +220,22 @@ function CairnsBlakeDowdNN(hidden_dims; show_intermediate=false, act=tanh)
 				Dense(hidden_dims => hidden_dims, act),
 				Dense(hidden_dims => 2)
 	)
+	log_sigma_NN =  Chain(
+				Dense(2 => hidden_dims, act), 
+				Dense(hidden_dims => hidden_dims, act),
+				Dense(hidden_dims => hidden_dims, act),
+				Dense(hidden_dims => 1)
+	)
 
-	return CairnsBlakeDowd(year_NN, show_intermediate)
+	return CairnsBlakeDowd(year_NN, log_sigma_NN, show_intermediate)
 end
 
 # ╔═╡ 760ced0b-17c0-43da-8ff8-e140c34b7d16
 function CairnsBlakeDowd2NN(hidden_dims; show_intermediate=false, act=tanh)
 
-	function CairnsBlakeDown2(model₁::Lux.AbstractLuxLayer, model₂::Lux.AbstractLuxLayer, show_intermediate::Bool)
+	function CairnsBlakeDown2(model₁::Lux.AbstractLuxLayer, model₂::Lux.AbstractLuxLayer, model₃::Lux.AbstractLuxLayer, show_intermediate::Bool)
 		# logit(q) = k1(t) + k2(x, t)
-		return @compact(; model₁, model₂, show_intermediate) do x
+		return @compact(; model₁, model₂, model₃, show_intermediate) do x
 			year = reshape(x[1, :], 1, :)
 			age = reshape(x[2, :], 1, :)
 			age_year = vcat(year, age)
@@ -224,10 +244,13 @@ function CairnsBlakeDowd2NN(hidden_dims; show_intermediate=false, act=tanh)
 			CBD_unlogit = exp.(k1 .+ k2)
 			CBD_qx = CBD_unlogit ./ (1 .+ CBD_unlogit)
 			CBD_mx = -log.(1 .- CBD_qx)
+
+			log_σ² = model₃(age_year) |> vec
+			
 			if show_intermediate
 				@return (k1, k2)
 			else
-				@return log.(CBD_mx)
+				@return (log.(CBD_mx), log_σ²)
 			end
 		end
 	end
@@ -244,16 +267,22 @@ function CairnsBlakeDowd2NN(hidden_dims; show_intermediate=false, act=tanh)
 				Dense(hidden_dims => hidden_dims, act),
 				Dense(hidden_dims => 1)
 	)
+	log_sigma_NN =  Chain(
+				Dense(2 => hidden_dims, act), 
+				Dense(hidden_dims => hidden_dims, act),
+				Dense(hidden_dims => hidden_dims, act),
+				Dense(hidden_dims => 1)
+	)
 
-	return CairnsBlakeDown2(year_NN, age_year_NN, show_intermediate)
+	return CairnsBlakeDown2(year_NN, age_year_NN, log_sigma_NN, show_intermediate)
 end
 
 # ╔═╡ 9fb77dbb-2244-4bd8-a29c-5ef84f117ce5
 function LeeCarterNN(hidden_dims; show_intermediate=false, act=tanh)
 
-	function LeeCarter(model₁::Lux.AbstractLuxLayer, model₂::Lux.AbstractLuxLayer, show_intermediate::Bool)
+	function LeeCarter(model₁::Lux.AbstractLuxLayer, model₂::Lux.AbstractLuxLayer, model₃::Lux.AbstractLuxLayer, show_intermediate::Bool)
 		# log(mu) = alpha(x) + beta(x)*kappa(t)
-		return @compact(; model₁, model₂, show_intermediate) do x
+		return @compact(; model₁, model₂, model₃, show_intermediate) do x
 			year = reshape(x[1, :], 1, :)
 			age = reshape(x[2, :], 1, :)
 			age_params = model₁(age)
@@ -261,10 +290,14 @@ function LeeCarterNN(hidden_dims; show_intermediate=false, act=tanh)
 			α = age_params[1, :]
 			β = exp.(age_params[2, :])
 			κ = year_params[1, :]
+
+			age_year = vcat(year, age)
+			log_σ² = model₃(age_year) |> vec
+			
 			if show_intermediate
 				@return (age_params, year_params)
 			else
-				@return α .+ β .* κ
+				@return (α .+ β .* κ, log_σ²)
 			end
 		end
 	end
@@ -283,24 +316,36 @@ function LeeCarterNN(hidden_dims; show_intermediate=false, act=tanh)
 				Dense(hidden_dims => 1)
 	)
 
-	return LeeCarter(age_NN, year_NN, show_intermediate)
+	log_sigma_NN =  Chain(
+				Dense(2 => hidden_dims, act), 
+				Dense(hidden_dims => hidden_dims, act),
+				Dense(hidden_dims => hidden_dims, act),
+				Dense(hidden_dims => 1)
+	)
+
+	return LeeCarter(age_NN, year_NN, log_sigma_NN, show_intermediate)
 end
 
 # ╔═╡ d8fd292f-7974-4e7b-a795-b263cea45fb7
 function GMNN(hidden_dims; show_intermediate=false, act=tanh)
 
-	function GM(model₁::Lux.AbstractLuxLayer, model₂::Lux.AbstractLuxLayer, show_intermediate::Bool)
+	function GM(model₁::Lux.AbstractLuxLayer, model₂::Lux.AbstractLuxLayer,  model₃::Lux.AbstractLuxLayer, show_intermediate::Bool)
 		# log(μ(x, t, c)) = log(M₁(x, t, c) + exp(M₂(x, t, c)))
-		return @compact(; model₁, model₂, show_intermediate) do x
-			xs_year = reshape(x[1, :], 1, :)
-			xs_age = reshape(x[2, :], 1, :)
-			NN_params₁ = model₁(vcat(xs_year, xs_age))
-			NN_params₂ = model₂(vcat(xs_year, xs_age))
+		return @compact(; model₁, model₂, model₃, show_intermediate) do x
+			year = reshape(x[1, :], 1, :)
+			age = reshape(x[2, :], 1, :)
+			age_year = vcat(year, age)
+			
+			NN_params₁ = model₁(age_year)
+			NN_params₂ = model₂(age_year)
+
+			
+			log_σ² = model₃(age_year) |> vec
 
 			if show_intermediate
 				@return (NN_params₁, NN_params₂)
 			else
-				@return log.(NN_params₁ .+ NN_params₂)
+				@return (log.(NN_params₁ .+ NN_params₂), log_σ²)
 			end
 		end
 	end
@@ -319,16 +364,28 @@ function GMNN(hidden_dims; show_intermediate=false, act=tanh)
 				Dense(hidden_dims => 1, exp)
 	)
 
-	return GM(NN₁, NN₂, show_intermediate)
+	log_sigma_NN =  Chain(
+				Dense(2 => hidden_dims, act), 
+				Dense(hidden_dims => hidden_dims, act),
+				Dense(hidden_dims => hidden_dims, act),
+				Dense(hidden_dims => 1)
+	)
+
+	return GM(NN₁, NN₂, log_sigma_NN, show_intermediate)
 end
 
 # ╔═╡ b15917eb-36a6-46c5-b05f-7140118b183a
 function classicNN(hidden_dims; act=tanh)
 
-	function classic(model::Lux.AbstractLuxLayer)
-		return @compact(; model) do x
-			xs = vcat(reshape(x[1, :], 1, :), reshape(x[2, :], 1, :))
-			@return model(xs)
+	function classic(model₁::Lux.AbstractLuxLayer, model₂::Lux.AbstractLuxLayer)
+		return @compact(; model₁, model₂) do x
+			year = reshape(x[1, :], 1, :)
+			age = reshape(x[2, :], 1, :)
+			age_year = vcat(year, age)
+
+			log_σ² = model₂(age_year) |> vec
+			
+			@return (model₁(age_year) |> vec, model₂)
 		end
 	end
 	
@@ -338,29 +395,40 @@ function classicNN(hidden_dims; act=tanh)
 				Dense(hidden_dims => hidden_dims, act),
 				Dense(hidden_dims => 1, identity)
 	)
+	log_sigma_NN =  Chain(
+				Dense(2 => hidden_dims, act), 
+				Dense(hidden_dims => hidden_dims, act),
+				Dense(hidden_dims => hidden_dims, act),
+				Dense(hidden_dims => 1)
+	)
 
-	return classic(_NN)
+	return classic(_NN, log_sigma_NN)
 end
 
 # ╔═╡ ebc03c34-6b56-43de-babf-6eb4811322a1
 function LocalGLMNetNN(hidden_dims; show_intermediate=false, act=tanh)
 
-	function LocalGLMNet(model::Lux.AbstractLuxLayer, show_intermediate::Bool)
-		return @compact(; model, show_intermediate) do x
+	function LocalGLMNet(model₁::Lux.AbstractLuxLayer, model₂::Lux.AbstractLuxLayer, show_intermediate::Bool)
+		return @compact(; model₁, model₂, show_intermediate) do x
 			# LocalGLMNet: h(x) = β₀ + β₁(x)*x + β₂(t)*t
 			xs_year = reshape(x[1, :], 1, :)
 			xs_age = reshape(x[2, :], 1, :)
 			_const = reshape(xs_year ./ xs_year, 1, :) # Create a vector of 1s
 			year = x[1, :]
 			age = x[2, :]
-			params_= model(vcat(_const, xs_age, xs_year))
+			params_= model(vcat(_const, xs_year, xs_age))
 			α = params_[1, :]
 			β₁ = params_[2, :]
 			β₂ = params_[3, :]
+
+			age_year = vcat(xs_year, xs_age)
+
+			log_σ² = model₂(age_year) |> vec
+			
 			if show_intermediate
 				@return year_params
 			else
-				@return (α .+ (β₁ .* year) .+ (β₂ .* age))
+				@return (α .+ (β₁ .* year) .+ (β₂ .* age), model₂)
 			end
 		end
 	end
@@ -371,29 +439,39 @@ function LocalGLMNetNN(hidden_dims; show_intermediate=false, act=tanh)
 				Dense(hidden_dims => hidden_dims, act),
 				Dense(hidden_dims => 3, identity)
 	)
+	log_sigma_NN =  Chain(
+				Dense(2 => hidden_dims, act), 
+				Dense(hidden_dims => hidden_dims, act),
+				Dense(hidden_dims => hidden_dims, act),
+				Dense(hidden_dims => 1)
+	)
 
-	return LocalGLMNet(_NN, show_intermediate)
+	return LocalGLMNet(_NN, log_sigma_NN, show_intermediate)
 end
 
 # ╔═╡ 4da18da3-6951-4b71-8a8e-953ecf0c0551
 function SilerNN(hidden_dims; show_intermediate=false, act=tanh)
 
-	function Siler(model::Lux.AbstractLuxLayer, show_intermediate::Bool)
-		return @compact(; model, show_intermediate) do x
+	function Siler(model₁::Lux.AbstractLuxLayer, model₂::Lux.AbstractLuxLayer,, show_intermediate::Bool)
+		return @compact(; model₁, model₂, show_intermediate) do x
 			# Siler: h(x) = a*exp(−bx) + c + d*exp(fx)
 			year = reshape(x[1, :], 1, :)
 			age = x[2, :]
-			year_params = model(year)
+			year_params = model₁(year)
 			α = year_params[1, :]
 			β = year_params[2, :]
 			γ = year_params[3, :]
 			δ = year_params[4, :]
 			η = year_params[5, :]
 
+			age_year = vcat(year, reshape(x[2, :], 1, :))
+
+			log_σ² = model₂(age_year) |> vec
+
 			if show_intermediate
 				@return year_params
 			else
-				@return log.(α .* exp.(-β .* age) .+ γ .+ δ .* exp.(η .* age))
+				@return (log.(α .* exp.(-β .* age) .+ γ .+ δ .* exp.(η .* age)), log_σ²)
 			end
 		end
 	end
@@ -404,15 +482,21 @@ function SilerNN(hidden_dims; show_intermediate=false, act=tanh)
 				Dense(hidden_dims => hidden_dims, act),
 				Dense(hidden_dims => 5, exp)
 	)
+	log_sigma_NN =  Chain(
+				Dense(2 => hidden_dims, act), 
+				Dense(hidden_dims => hidden_dims, act),
+				Dense(hidden_dims => hidden_dims, act),
+				Dense(hidden_dims => 1)
+	)
 
-	return Siler(year_NN, show_intermediate)
+	return Siler(year_NN, log_sigma_NN, show_intermediate)
 end
 
 # ╔═╡ fb46cbe5-dbde-4ca5-b500-10e4ff5106af
 function HeligmanPollardNN(hidden_dims; show_intermediate=false, act=tanh)
 	
-	function HeligmanPollard(model₁::Lux.AbstractLuxLayer, model₂::Lux.AbstractLuxLayer, show_intermediate::Bool)
-		return @compact(; model₁, model₂, show_intermediate) do x
+	function HeligmanPollard(model₁::Lux.AbstractLuxLayer, model₂::Lux.AbstractLuxLayer, model₃::Lux.AbstractLuxLayer, show_intermediate::Bool)
+		return @compact(; model₁, model₂, model₃, show_intermediate) do x
 			# HP: qx/(1-qx) = A^(x+B)^c + D*exp(-E(log(x/F))^2) + GH^x
 			year = reshape(x[1, :], 1, :)
 			age = ((x[2, :]) .* s_age) .+ m_age
@@ -434,10 +518,15 @@ function HeligmanPollardNN(hidden_dims; show_intermediate=false, act=tanh)
 			HP_qx = HP ./ (1 .+ HP)
 
 			HP_mx = -log.(1 .- HP_qx)
+
+			age_year = vcat(year, reshape(x[2, :], 1, :))
+
+			log_σ² = model₃(age_year) |> vec
+			
 			if show_intermediate
 				@return year_params
 			else
-				@return log.(HP_mx)
+				@return (log.(HP_mx), log_σ²)
 			end
 		end
 	end
@@ -455,8 +544,15 @@ function HeligmanPollardNN(hidden_dims; show_intermediate=false, act=tanh)
 				Dense(hidden_dims => hidden_dims, act),
 				Dense(hidden_dims => 2, exp)
 	)
+	
+	log_sigma_NN =  Chain(
+				Dense(2 => hidden_dims, act), 
+				Dense(hidden_dims => hidden_dims, act),
+				Dense(hidden_dims => hidden_dims, act),
+				Dense(hidden_dims => 1)
+	)
 
-	return HeligmanPollard(NN_1, NN_2, show_intermediate)
+	return HeligmanPollard(NN_1, NN_2, log_sigma_NN, show_intermediate)
 end
 
 # ╔═╡ b046da21-63a9-4556-ab7b-24e1c8f629e0
@@ -807,12 +903,15 @@ output_1 == output_2
 # ╔═╡ 35b49e8b-ce5c-43b0-a203-f945de974bb2
 grad_1 == grad_2.model
 
+# ╔═╡ 1b83a76d-2587-4e3c-a000-901a5a165716
+add_var_to_y(yt) = vcat(yt, repeat([log.(var(yt))], size(yt, 2))')
+
 # ╔═╡ b7d6736b-776e-49d1-ae18-4a64b07a1a24
 begin
 	if model_type == "NN"
 		#discrete_model = FNN(τ₀, τ₁, 1; depth=NN_depth, act=act, outer_act=identity)
-		discrete_model = GompertzNN(τ₁)
-		#discrete_model = LeeCarterNN(τ₁; act=act)
+		#discrete_model = GompertzNN(τ₁)
+		discrete_model = LeeCarterNN(τ₁; act=act)
 		#discrete_model = SilerNN(τ₁)
 		#discrete_model = HeligmanPollardNN(τ₁)
 		#discrete_model = CairnsBlakeDowdNN(τ₁)
@@ -839,9 +938,9 @@ begin
 
 	if model_type == "NN"
 		try
-			@time tstate, train_losses = main(tstate, ad_rule, (X_train, y_train), n_epochs; early_stopping=false)
+			@time tstate, train_losses = main(tstate, ad_rule, (X_train, add_var_to_y(y_train)), n_epochs; early_stopping=false)
 		catch
-			@time tstate, train_losses = main(tstate, ad_rule, (X_train, reshape(y_train, :, 1)), n_epochs; early_stopping=false)
+			@time tstate, train_losses = main(tstate, ad_rule, (X_train, reshape(add_var_to_y(y_train), :, 2)), n_epochs; early_stopping=false)
 		end
 	else
 		@time tstate, train_losses = main(tstate, ad_rule, (X_train, y_train), n_epochs; early_stopping=false)
@@ -849,7 +948,13 @@ begin
 end
 
 # ╔═╡ 864a7e7f-d4e3-4ada-b81a-61d5574c7138
-y_train
+add_var_to_y(y_train)
+
+# ╔═╡ 1fe630ea-6926-4260-b549-12d11856a74a
+reshape(y_train, :, 1)
+
+# ╔═╡ b34c44fd-fed8-4111-984e-39e98bfe1481
+reshape(add_var_to_y(y_train), :, 2)
 
 # ╔═╡ 7096f53d-8f11-415d-b419-4c28917d6dc2
 X_train
@@ -923,8 +1028,8 @@ end
 # ╔═╡ 2598323d-8e4b-4789-8f77-97cc99b94b29
 if model_type == "NN"
 	#BNN_arch = FNN(τ₀, τ₁, 1; depth=NN_depth, act=act, outer_act=identity)
-	BNN_arch = GompertzNN(τ₁; act=act)
-	#BNN_arch = LeeCarterNN(τ₁; act=act)
+	#BNN_arch = GompertzNN(τ₁; act=act)
+	BNN_arch = LeeCarterNN(τ₁; act=act)
 	#BNN_arch = SilerNN(τ₁; act=act)
 	#BNN_arch = HeligmanPollardNN(τ₁; act=act)
 	#BNN_arch = CairnsBlakeDowdNN(τ₁; act=act)
@@ -941,8 +1046,9 @@ end
 
 # ╔═╡ 0711bfc1-4337-4ae4-a5b0-c7b08dae2190
 begin
-	N_samples = 350
+	N_samples = 1_000
 	half_N_samples = min(50, Int(N_samples/2))
+	N_chains = 2#4#1
 end
 
 # ╔═╡ 78baeae1-36cb-47a4-b82a-fba776e19635
@@ -952,33 +1058,38 @@ function BNN(BNN_arch, N_samples)
 
 	#DNN_params = vcat(tstate.parameters...) |> f64
 
-	Nloglikelihood(y_, μ_, σ_) = loglikelihood(MvNormal(μ_, (σ_^2) .* I), y_)
+	Nloglikelihood(y_, μ_, σ_) = loglikelihood(MvNormal(μ_, (σ_ .^ 2) .* I), y_)
 
 	@model function bayes_nn(xs, ys, BNN_arch, ps_BNN, sig, n_params, ::Type{T} = Float64) where {T}
 
 		# Priors
 		## Sample the parameters
 		#σ ~ truncated(Normal(0, 1); lower=1e-4)
-		σ ~ truncated(Normal(0, 1); lower=0.25, upper=0.65)
+		#σ ~ truncated(Normal(0, 1); lower=0.25, upper=0.65)
 		#σ ~ InverseGamma(12, 5.5)
-		α ~ Uniform(0.9, 1.0)
+		α ~ Uniform(0.90, 1.0)
 		parameters ~ MvNormal(zeros(n_params), (sig^2) .* I)
 		#parameters ~ filldist(Laplace(0.0, (sig^2)), n_params)
 		#parameters ~ MvNormal(DNN_params, (sig^2) .* I)
 		
 		## Forward NN to make predictions
-		μ, st_BNN = Lux.apply(BNN_arch, xs, vector_to_parameters(parameters .* α, ps_BNN), st_BNN)
+		log_μ_and_sigma, st_BNN = Lux.apply(BNN_arch, xs, vector_to_parameters(parameters .* α, ps_BNN), st_BNN)
+		μ = log_μ_and_sigma[1]
+		σ = sqrt.(exp.(log_μ_and_sigma[2]))
 	
 		## Likelihood
+		#=
 		for i ∈ 1:size(ys)[2]
-			Turing.@addlogprob! Nloglikelihood(ys[:, i], μ[:, i], σ)
-		end	
+			Turing.@addlogprob! Nloglikelihood(ys[:, i], μ[:, i], σ[:, i])
+		end
+		=#
+		ys ~ MvNormal(μ, I * (σ .^ 2))
 
 		return nothing
 	end
 
 	n_params = Lux.parameterlength(BNN_arch)
-	sig = 0.85
+	sig = 0.30#0.85#0.025
 
 	if model_type == "NN"
 		BNN_inference = bayes_nn(X_train |> f64, reshape(y_train, :, 1) |> f64, BNN_arch, ps_BNN, sig, n_params)
@@ -995,9 +1106,11 @@ function BNN(BNN_arch, N_samples)
 
 	if sample_type == "MCMC" 
 		#chains = sample(Xoshiro(22), BNN_inference, sampling_alg, N_samples; discard_adapt=false, initial_params=map_estimate.values.array)
-		chains = sample(Xoshiro(22), BNN_inference, sampling_alg, MCMCThreads(), N_samples, 4; discard_adapt=false)
+		chains_prior = 0.0#sample(Xoshiro(22), BNN_inference, Prior(), N_samples; discard_adapt=false)
+		chains = sample(Xoshiro(22), BNN_inference, sampling_alg, MCMCThreads(), N_samples, N_chains; discard_adapt=false)
+		#chains = sample(Xoshiro(22), BNN_inference, Prior(), MCMCThreads(), N_samples, N_chains; discard_adapt=false)
 
-		return chains, ps_BNN, st_BNN, 0.0#map_estimate
+		return chains, ps_BNN, st_BNN, chains_prior
 	elseif sample_type == "VI"
 		qo = q_fullrank_gaussian(BNN_inference)
 		#qo = q_meanfield_gaussian(BNN_inference)
@@ -1012,13 +1125,16 @@ function BNN(BNN_arch, N_samples)
 
 		chains = Chains(reshape(z', (size(z, 2), size(z, 1), 1)), varnames)
 
-		return chains, ps_BNN, st_BNN, 0.0#map_estimate
+		return chains, ps_BNN, st_BNN, 0.0
 	end
 
 end
 
 # ╔═╡ 60fe0f3c-89e0-4996-8af6-7424b772cefa
-chains, ps_BNN, st_BNN, map_estimate = BNN(BNN_arch, N_samples)
+chains, ps_BNN, st_BNN, chains_prior = BNN(BNN_arch, N_samples)
+
+# ╔═╡ 0042643c-bf69-4a8d-b727-c0c875c77973
+summarize(chains)
 
 # ╔═╡ a18df247-d38f-4def-b56f-7b025ca57e2f
 StatsPlots.plot(chains[half_N_samples:end, 1:75:end, :])
@@ -1034,6 +1150,9 @@ describe(chains)[1][3:end, :ess_bulk] |> mean
 
 # ╔═╡ f378bc31-9a5f-4cda-9754-929c4dc89b3d
 describe(chains)[1][3:end, :ess_per_sec] |> mean
+
+# ╔═╡ ca031860-7d8c-4cb0-8f00-c7e4bf232316
+gelmandiag(chains)[2:end, :psrf] |> mean
 
 # ╔═╡ e3d59361-1d40-41dd-88b7-4cddcdf69d79
 # Extract all weight and bias parameters.
@@ -1056,8 +1175,11 @@ end
 # ╔═╡ 2a172202-dea1-4101-a49a-4a8d64c68e3c
 function predict(m, xs, single_chain, p_, st_)
 	st_test = Lux.testmode(st_)
-	return vec(Lux.apply(m, xs |> f64, vector_to_parameters(single_chain, p_) |> f64, st_test)[1])
+	return (Lux.apply(m, xs |> f64, vector_to_parameters(single_chain, p_) |> f64, st_test)[1])
 end
+
+# ╔═╡ b9886727-893a-47b5-9df6-2c55e3811406
+#θ[idx, :, 1]
 
 # ╔═╡ 06de1912-a662-4988-8f95-a78322757f2f
 function predict(m, xs, chains, p_, st_, N_sims)
@@ -1068,9 +1190,20 @@ function predict(m, xs, chains, p_, st_, N_sims)
 	
 	st_test = Lux.testmode(st_)
 
+	#=
 	fwd_pass(par, s, q) = vec(Lux.apply(m, xs |> f64, vector_to_parameters(par, p_) |> f64, st_test)[1]) .+ rand(Xoshiro(1111+q), Normal(0, s^2), 1)
 
 	y_pred_f = hcat([fwd_pass(θ_sample[k, :] .* α_sample[k, :], σ_sample[k, :][1], k) for k ∈ 1:N_sims]...)'
+	=#
+
+	function fwd_pass(par, q)
+		res = (Lux.apply(m, xs |> f64, vector_to_parameters(par, p_) |> f64, st_test)[1])
+		res_μ = res[1]
+		res_σ² = exp.(res[2])
+		return vec(rand(Xoshiro(1111+q), MvNormal(res_μ, I * res_σ²)))
+	end
+
+	y_pred_f = hcat([fwd_pass(θ_sample[k, :] .* α_sample[k, :], k) for k ∈ 1:N_sims]...)'
 
 	return quantile.(eachcol(y_pred_f), 0.5) |> vec, quantile.(eachcol(y_pred_f), 0.025) |> vec, quantile.(eachcol(y_pred_f), 1-0.025) |> vec
 end
@@ -1146,6 +1279,9 @@ if model_type ≠ "NN"
 	forecast = predict(tstate, X_valid, (extended_forecast_year-end_year+1), x_1, x_2, standardise)
 end
 
+# ╔═╡ b8fc95a6-b495-4b64-a784-906937d19135
+predict(BNN_arch, X_train, θ[idx, :, 1], ps_BNN, st_BNN)
+
 # ╔═╡ c8fa5746-8eec-45a1-bda5-871ef71de684
 @info "Observed Data: $(sum(TEST.Observed))"
 
@@ -1157,7 +1293,7 @@ begin
 	if model_type == "NN"
 		# Get first year of validation/test set
 		X_test_valid = Matrix(TEST[TEST.Year .== end_year, ["Year_std", "Age_std"]])'
-		y_pred_test = predict(tstate, X_test_valid)
+		#y_pred_test = predict(tstate, X_test_valid)
 		
 		#plot(title="Validation Set ($end_year): $(country)\n τ₁=$τ₁, act=$act, FNN, depth=$NN_depth", xlab="Age", ylab="log μ", legend=:topleft)#, ylim=(-12.0, 0.0))
 		plot(title="Validation Set ($end_year): $(country)\n Lee-Carter NN", xlab="Age", ylab="log μ", legend=:topleft)#, ylim=(-12.0, 0.0))
@@ -1166,8 +1302,10 @@ begin
 
 		@info "MSE Training Set: $(1e4 * mean((exp.(TEST[TEST.Year .≤ end_year .&& TEST[:, gender_]  .< 0, gender_]) .- exp.(predict(BNN_arch, Matrix(TEST[TEST.Year .≤ end_year .&& TEST[:, gender_]  .< 0, ["Year_std", "Age_std"]])', chains, ps_BNN, st_BNN, 1_000)[1])) .^ 2))×10e-4"
 		@info "MSE Testing Set: $(1e4 * mean((exp.(TEST[end_year .< TEST.Year .≤ forecast_year .&& TEST[:, gender_]  .< 0, gender_]) .- exp.(predict(BNN_arch, Matrix(TEST[end_year .< TEST.Year .≤ forecast_year .&& TEST[:, gender_]  .< 0, ["Year_std", "Age_std"]])', chains, ps_BNN, st_BNN, 1_000)[1])) .^ 2))×10e-4"
+		@info "MAE Training Set: $(1 * mean(abs.(exp.(TEST[TEST.Year .≤ end_year .&& TEST[:, gender_]  .< 0, gender_]) .- exp.(predict(BNN_arch, Matrix(TEST[TEST.Year .≤ end_year .&& TEST[:, gender_]  .< 0, ["Year_std", "Age_std"]])', chains, ps_BNN, st_BNN, 1_000)[1]))))"
+		@info "MAE Testing Set: $(1 * mean(abs.(exp.(TEST[end_year .< TEST.Year .≤ forecast_year .&& TEST[:, gender_]  .< 0, gender_]) .- exp.(predict(BNN_arch, Matrix(TEST[end_year .< TEST.Year .≤ forecast_year .&& TEST[:, gender_]  .< 0, ["Year_std", "Age_std"]])', chains, ps_BNN, st_BNN, 1_000)[1]))))"
 		
-		plot!(start_age:end_age, vec(y_pred_test), label="Predicted: ADAM", width=2, color=:blue)
+		#plot!(start_age:end_age, vec(y_pred_test), label="Predicted: ADAM", width=2, color=:blue)
 		plot!(start_age:end_age, vec(median_pred), label="Predicted: BNN Median", width=2, color=:red)
 		plot!(start_age:end_age, lb_pred, fillrange=ub_pred, label="Predicted: BNN 95% CI", width=0.9, color=:red, alpha=0.2)
 		scatter!(TEST[TEST.Year .== end_year .&& TEST[:, gender_] .< 0, :Age], TEST[TEST.Year .== end_year .&& TEST[:, gender_] .< 0, gender_], label="Actual: Complete", color=:orange)
@@ -1202,8 +1340,8 @@ begin
 	_, lb_train, ub_train = predict(BNN_arch, Matrix(TEST[TEST.Year .< end_year .&& TEST[:, gender_]  .< 0, ["Year_std", "Age_std"]])', chains, ps_BNN, st_BNN, 1_000)
 	_, lb_test, ub_test = predict(BNN_arch, Matrix(TEST[TEST.Year .≥ end_year .&& TEST[:, gender_]  .< 0, ["Year_std", "Age_std"]])', chains, ps_BNN, st_BNN, 1_000)
 
-	println("MPIW (train): $(mean(exp.(ub_train) .- exp.(lb_train)) * 1e4)×10e-4")
-	println("MPIW (test): $(mean(exp.(ub_test) .- exp.(lb_test)) * 1e4)×10e-4")
+	println("MPIW (train): $(mean(exp.(ub_train) .- exp.(lb_train)))")
+	println("MPIW (test): $(mean(exp.(ub_test) .- exp.(lb_test)))")
 
 	println("PICP (train): $(mean(lb_train .< TEST[TEST.Year .< end_year .&& TEST[:, gender_]  .< 0, gender_] .< ub_train) * 1e2)%")
 	println("PICP (test): $(mean(lb_test .< TEST[TEST.Year .≥ end_year .&& TEST[:, gender_]  .< 0, gender_] .< ub_test) * 1e2)%")
@@ -1223,7 +1361,7 @@ begin
 		scatter!(y_test[y_test.Year .== forecast_year_, :Age], y_test[y_test.Year .== forecast_year_, gender_], label="Actual", color=:orange)
 	else
 		X_test_forecast = Matrix(TEST[TEST.Year .== forecast_year_, ["Year_std", "Age_std"]])'
-		y_pred_forecast = predict(tstate, X_test_forecast)
+		#y_pred_forecast = predict(tstate, X_test_forecast)
 		
 		plot(title="Forecast (Year $forecast_year_): $(country)\n τ₁=$τ₁, act=$act, FNN, depth=$NN_depth", xlab="Age", ylab="log μ", legend=:best, ylim=(-12.0, 0.0))
 		plot(title="Year $forecast_year_: $(country)\n Lee-Carter NN, gender=$gender_", xlab="Age", ylab="log μ", legend=:best)#, ylim=(-12.0, 0.0))
@@ -1232,7 +1370,7 @@ begin
 
 		plot!(start_age:end_age, vec(median_forecast), label="Predicted: BNN Median", width=2, color=:red)
 		plot!(start_age:end_age, vec(lb_forecast), fillrange=vec(ub_forecast), label="Forecast: BNN 95% CI", color=:red, width=0.9, alpha=0.2)
-		plot!(start_age:end_age, vec(y_pred_forecast), label="Predicted: $opt", width=2, color=:blue)
+		#plot!(start_age:end_age, vec(y_pred_forecast), label="Predicted: $opt", width=2, color=:blue)
 		scatter!(TEST[TEST.Year .== forecast_year_ .&& TEST[:, gender_] .< 0, :Age], TEST[TEST.Year .== forecast_year_ .&& TEST[:, gender_] .< 0, gender_], label="Actual: Complete", color=:orange)
 		scatter!(TEST[TEST.Year .== forecast_year_ .&& TEST.Observed .== 1 .&& TEST[:, gender_]  .< 0, :Age], TEST[TEST.Year .== forecast_year_ .&& TEST.Observed .== 1 .&& TEST[:, gender_]  .< 0, gender_], label="Actual: Observed", color=:black)
 	end
@@ -1255,13 +1393,13 @@ begin
 		scatter!(y_test[y_test.Age .== forecast_age, :Year], y_test[y_test.Age .== forecast_age, :Female], label="Actual", color=:orange)
 	else
 		X_test_forecast_ = Matrix(TEST[TEST.Age .== forecast_age, ["Year_std", "Age_std"]])'
-		y_pred_forecast_ = predict(tstate, X_test_forecast_)
+		#y_pred_forecast_ = predict(tstate, X_test_forecast_)
 		
 		plot(title="Forecast for Age $forecast_age: $(country)\n Lee-Carter NN", xlab="Year", ylab="log μ", legend=:best)
 		
 		median_forecast2, lb_forecast2, ub_forecast2 = predict(BNN_arch, X_test_forecast_, chains, ps_BNN, st_BNN, 1_000)
 
-		plot!(max(start_year, TEST.Year[1]):extended_forecast_year, y_pred_forecast_, label="Forecast: $opt", color=:blue, width=2)
+		#plot!(max(start_year, TEST.Year[1]):extended_forecast_year, y_pred_forecast_, label="Forecast: $opt", color=:blue, width=2)
 		plot!(max(start_year, TEST.Year[1]):extended_forecast_year, median_forecast2, label="Forecast: BNN Median", color=:red, width=2)
 		plot!(max(start_year, TEST.Year[1]):extended_forecast_year, lb_forecast2, fillrange=ub_forecast2, label="Forecast: BNN 95% CI", color=:red, width=0.9, alpha=0.2)
 		scatter!(TEST[TEST.Age .== forecast_age .&& TEST[:, gender_]  .< 0, :Year], TEST[TEST.Age .== forecast_age .&& TEST[:, gender_]  .< 0, gender_], label="Actual: Complete", color=:orange)
@@ -1469,8 +1607,11 @@ end
 # ╠═4ccfe2d4-2c02-41a4-bd6e-547827afd5e5
 # ╠═2474f166-64e3-43ac-98ce-17d367d89bd2
 # ╠═35b49e8b-ce5c-43b0-a203-f945de974bb2
+# ╠═1b83a76d-2587-4e3c-a000-901a5a165716
 # ╠═b7d6736b-776e-49d1-ae18-4a64b07a1a24
 # ╠═864a7e7f-d4e3-4ada-b81a-61d5574c7138
+# ╠═1fe630ea-6926-4260-b549-12d11856a74a
+# ╠═b34c44fd-fed8-4111-984e-39e98bfe1481
 # ╠═7096f53d-8f11-415d-b419-4c28917d6dc2
 # ╠═3c47c725-8751-4088-bc99-39c3cc653377
 # ╠═096a8a27-ddad-4534-94e4-71f755d5f561
@@ -1486,22 +1627,26 @@ end
 # ╠═2fa273ec-86e1-4e2c-a589-e79a09e0089d
 # ╠═c0047459-5f14-4af7-b541-8238763d4a70
 # ╠═f1f84de0-488a-4bad-a2a4-64965d493dc7
-# ╠═7e8e62f5-28a1-4153-892a-fc8988130f4b
 # ╠═c8bca677-24d5-4bcc-b881-e0f43f208ca9
+# ╠═7e8e62f5-28a1-4153-892a-fc8988130f4b
 # ╠═f099a171-e1ba-4d74-87a3-010e0e9ff27a
 # ╠═2598323d-8e4b-4789-8f77-97cc99b94b29
 # ╠═0711bfc1-4337-4ae4-a5b0-c7b08dae2190
 # ╠═78baeae1-36cb-47a4-b82a-fba776e19635
 # ╠═60fe0f3c-89e0-4996-8af6-7424b772cefa
+# ╠═0042643c-bf69-4a8d-b727-c0c875c77973
 # ╠═a18df247-d38f-4def-b56f-7b025ca57e2f
 # ╠═ef5320bf-0b65-45da-9a9b-7c52dca56733
 # ╠═c5f772b2-ab1d-4612-8d49-fcffea9772b7
 # ╠═930e4cb8-5374-465c-8288-493bfeb9c333
 # ╠═f378bc31-9a5f-4cda-9754-929c4dc89b3d
+# ╠═ca031860-7d8c-4cb0-8f00-c7e4bf232316
 # ╠═e3d59361-1d40-41dd-88b7-4cddcdf69d79
 # ╠═c3ce3d5f-1fd7-4523-9184-1a51eba6a75f
 # ╠═0e0860eb-5fe6-451b-9ecf-40c48f49a233
 # ╠═2a172202-dea1-4101-a49a-4a8d64c68e3c
+# ╠═b9886727-893a-47b5-9df6-2c55e3811406
+# ╠═b8fc95a6-b495-4b64-a784-906937d19135
 # ╠═06de1912-a662-4988-8f95-a78322757f2f
 # ╠═c1ca74d8-8c90-427b-8bf2-41ab1d13bcf3
 # ╠═950c5db7-fabc-4da1-a14d-5f8d83f9f4f2
