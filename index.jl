@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.20.19
+# v0.20.20
 
 using Markdown
 using InteractiveUtils
@@ -25,11 +25,11 @@ Turing.setprogress!(true);
 # ╔═╡ 50b3b576-d941-4609-8469-6de51cfa1545
 begin
 	start_year = 1950
-	end_year = 2000#2006
+	end_year = 2000
 	forecast_year = 2016
 	extended_forecast_year = 2065
-	start_age = 0#60
-	end_age = 99#89
+	start_age = 0
+	end_age = 99
 	age_length = length(start_age:end_age)
 	τ₀ = 3
 	τ₁ = 8
@@ -38,9 +38,9 @@ begin
 	cell = LSTMCell #GRUCell
 	act = tanh
 	list_of_countries = HMD.get_countries()
-	country = list_of_countries["Switzerland"]
+	country = list_of_countries["Italy"]
 	gender_ = :Male
-	p_ = 1.0
+	p_ = 1.0#0.05
 	model_type = "NN"
 	# Hard-code
 	if model_type == "NN"
@@ -161,13 +161,13 @@ function GompertzNN(hidden_dims; show_intermediate=false, act=tanh)
 			β = params[2, :] # 1
 			c = log.(params[3, :]) # 2
 
-			age_year = vcat(year, age)
+			age_year = vcat(year, reshape(x[2, :], 1, :))
 			log_σ² = model₂(age_year) |> vec
 			
 			if show_intermediate
 				@return params
 			else
-				@return (log.(α .+ β .* exp.(c .* age)), log_σ²)
+				@return hcat(log.(α .+ β .* exp.(c .* age)), log_σ²)
 			end
 		end
 	end
@@ -203,13 +203,13 @@ function CairnsBlakeDowdNN(hidden_dims; show_intermediate=false, act=tanh)
 			CBD_qx = CBD_unlogit ./ (1 .+ CBD_unlogit)
 			CBD_mx = -log.(1 .- CBD_qx)
 
-			age_year = vcat(year, age)
+			age_year = vcat(year, reshape(x[2, :], 1, :))
 			log_σ² = model₂(age_year) |> vec
 			
 			if show_intermediate
 				@return year_params
 			else
-				@return (log.(CBD_mx), log_σ²)
+				@return hcat(log.(CBD_mx), log_σ²)
 			end
 		end
 	end
@@ -250,7 +250,7 @@ function CairnsBlakeDowd2NN(hidden_dims; show_intermediate=false, act=tanh)
 			if show_intermediate
 				@return (k1, k2)
 			else
-				@return (log.(CBD_mx), log_σ²)
+				@return hcat(log.(CBD_mx), log_σ²)
 			end
 		end
 	end
@@ -297,7 +297,7 @@ function LeeCarterNN(hidden_dims; show_intermediate=false, act=tanh)
 			if show_intermediate
 				@return (age_params, year_params)
 			else
-				@return (α .+ β .* κ, log_σ²)
+				@return hcat(α .+ β .* κ, log_σ²)
 			end
 		end
 	end
@@ -345,7 +345,7 @@ function GMNN(hidden_dims; show_intermediate=false, act=tanh)
 			if show_intermediate
 				@return (NN_params₁, NN_params₂)
 			else
-				@return (log.(NN_params₁ .+ NN_params₂), log_σ²)
+				@return hcat(log.(NN_params₁ .+ NN_params₂), log_σ²)
 			end
 		end
 	end
@@ -377,15 +377,13 @@ end
 # ╔═╡ b15917eb-36a6-46c5-b05f-7140118b183a
 function classicNN(hidden_dims; act=tanh)
 
-	function classic(model₁::Lux.AbstractLuxLayer, model₂::Lux.AbstractLuxLayer)
-		return @compact(; model₁, model₂) do x
+	function classic(model₁::Lux.AbstractLuxLayer)
+		return @compact(; model₁) do x
 			year = reshape(x[1, :], 1, :)
 			age = reshape(x[2, :], 1, :)
 			age_year = vcat(year, age)
-
-			log_σ² = model₂(age_year) |> vec
 			
-			@return (model₁(age_year) |> vec, model₂)
+			@return model₁(age_year)'
 		end
 	end
 	
@@ -393,16 +391,10 @@ function classicNN(hidden_dims; act=tanh)
 				Dense(2 => hidden_dims, act), 
 				Dense(hidden_dims => hidden_dims, act),
 				Dense(hidden_dims => hidden_dims, act),
-				Dense(hidden_dims => 1, identity)
-	)
-	log_sigma_NN =  Chain(
-				Dense(2 => hidden_dims, act), 
-				Dense(hidden_dims => hidden_dims, act),
-				Dense(hidden_dims => hidden_dims, act),
-				Dense(hidden_dims => 1)
+				Dense(hidden_dims => 2, identity)
 	)
 
-	return classic(_NN, log_sigma_NN)
+	return classic(_NN)
 end
 
 # ╔═╡ ebc03c34-6b56-43de-babf-6eb4811322a1
@@ -428,7 +420,7 @@ function LocalGLMNetNN(hidden_dims; show_intermediate=false, act=tanh)
 			if show_intermediate
 				@return year_params
 			else
-				@return (α .+ (β₁ .* year) .+ (β₂ .* age), model₂)
+				@return hcat(α .+ (β₁ .* year) .+ (β₂ .* age), model₂)
 			end
 		end
 	end
@@ -452,7 +444,7 @@ end
 # ╔═╡ 4da18da3-6951-4b71-8a8e-953ecf0c0551
 function SilerNN(hidden_dims; show_intermediate=false, act=tanh)
 
-	function Siler(model₁::Lux.AbstractLuxLayer, model₂::Lux.AbstractLuxLayer,, show_intermediate::Bool)
+	function Siler(model₁::Lux.AbstractLuxLayer, model₂::Lux.AbstractLuxLayer, show_intermediate::Bool)
 		return @compact(; model₁, model₂, show_intermediate) do x
 			# Siler: h(x) = a*exp(−bx) + c + d*exp(fx)
 			year = reshape(x[1, :], 1, :)
@@ -471,7 +463,7 @@ function SilerNN(hidden_dims; show_intermediate=false, act=tanh)
 			if show_intermediate
 				@return year_params
 			else
-				@return (log.(α .* exp.(-β .* age) .+ γ .+ δ .* exp.(η .* age)), log_σ²)
+				@return hcat(log.(α .* exp.(-β .* age) .+ γ .+ δ .* exp.(η .* age)), log_σ²)
 			end
 		end
 	end
@@ -526,7 +518,7 @@ function HeligmanPollardNN(hidden_dims; show_intermediate=false, act=tanh)
 			if show_intermediate
 				@return year_params
 			else
-				@return (log.(HP_mx), log_σ²)
+				@return hcat(log.(HP_mx), log_σ²)
 			end
 		end
 	end
@@ -833,8 +825,26 @@ X_train
 # ╔═╡ d12da7dd-e186-4329-939e-92cd8702f2e6
 X_train
 
+# ╔═╡ 271f155f-9486-4146-9a74-2a3df97e8df4
+begin
+	foo_1 = FNN(τ₀, τ₁, 1; depth=NN_depth, act=act, outer_act=identity)
+	ps_1, st_1 = Lux.setup(Xoshiro(12345), foo_1)
+	ps_1 = ps_1 |> ComponentArray
+	tstate_1 = Lux.Training.TrainState(foo_1, ps_1, st_1, opt)
+
+	keys(ps_1)
+
+	output_1, _ = foo_1(X_train, ps_1, st_1)
+
+	grad_1 = Zygote.gradient(ps_ -> sum(foo_1(X_train, ps_, st_1)[1]), ps_1)[1]
+end
+
+# ╔═╡ 1b83a76d-2587-4e3c-a000-901a5a165716
+add_var_to_y(yt) = vcat(yt, repeat([log.(var(yt))], size(yt, 2))')
+
 # ╔═╡ 564d77df-85c1-406a-8964-3b14fca6328c
 function main(tstate, vjp, data, epochs; early_stopping=true)
+	y_train_t = add_var_to_y(y_train)
 	loss_function = MSELoss()
 	train_losses = []
 	#valid_losses = []
@@ -844,7 +854,7 @@ function main(tstate, vjp, data, epochs; early_stopping=true)
         _, l, _, tstate = Training.single_train_step!(vjp, loss_function, data, tstate)
 		# Use testmode to turn off Dropout
 		train_pred = (Lux.apply(tstate.model, X_train, tstate.parameters, Lux.testmode(tstate.states)))[1]
-		train_loss = MSELoss()(reshape(y_train, :, 1), train_pred)
+		train_loss = MSELoss()(y_train_t', train_pred)
 		push!(train_losses, train_loss)
 		
 		#valid_pred = (Lux.apply(tstate.model, X_valid, tstate.parameters, Lux.testmode(tstate.states)))[1]
@@ -869,54 +879,17 @@ function main(tstate, vjp, data, epochs; early_stopping=true)
     return tstate, train_losses#, valid_losses
 end
 
-# ╔═╡ 271f155f-9486-4146-9a74-2a3df97e8df4
-begin
-	foo_1 = FNN(τ₀, τ₁, 1; depth=NN_depth, act=act, outer_act=identity)
-	ps_1, st_1 = Lux.setup(Xoshiro(12345), foo_1)
-	ps_1 = ps_1 |> ComponentArray
-	tstate_1 = Lux.Training.TrainState(foo_1, ps_1, st_1, opt)
-
-	keys(ps_1)
-
-	output_1, _ = foo_1(X_train, ps_1, st_1)
-
-	grad_1 = Zygote.gradient(ps_ -> sum(foo_1(X_train, ps_, st_1)[1]), ps_1)[1]
-end
-
-# ╔═╡ 4ccfe2d4-2c02-41a4-bd6e-547827afd5e5
-begin
-	foo_2 = classicNN(τ₁; act=act)
-	ps_2, st_2 = Lux.setup(Xoshiro(12345), foo_2)
-	ps_2 = ps_2 |> ComponentArray
-	tstate_2 = Lux.Training.TrainState(foo_2, ps_2, st_2, opt)
-
-	keys(ps_2)
-
-	output_2, _ = foo_2(X_train, ps_2, st_2)
-	
-	grad_2 = Zygote.gradient(ps_ -> sum(foo_2(X_train, ps_, st_2)[1]), ps_2)[1]
-end
-
-# ╔═╡ 2474f166-64e3-43ac-98ce-17d367d89bd2
-output_1 == output_2
-
-# ╔═╡ 35b49e8b-ce5c-43b0-a203-f945de974bb2
-grad_1 == grad_2.model
-
-# ╔═╡ 1b83a76d-2587-4e3c-a000-901a5a165716
-add_var_to_y(yt) = vcat(yt, repeat([log.(var(yt))], size(yt, 2))')
-
 # ╔═╡ b7d6736b-776e-49d1-ae18-4a64b07a1a24
 begin
 	if model_type == "NN"
 		#discrete_model = FNN(τ₀, τ₁, 1; depth=NN_depth, act=act, outer_act=identity)
 		#discrete_model = GompertzNN(τ₁)
-		discrete_model = LeeCarterNN(τ₁; act=act)
+		#discrete_model = LeeCarterNN(τ₁; act=act)
 		#discrete_model = SilerNN(τ₁)
 		#discrete_model = HeligmanPollardNN(τ₁)
 		#discrete_model = CairnsBlakeDowdNN(τ₁)
 		#discrete_model = GMNN(τ₁)
-		#discrete_model = CairnsBlakeDowd2NN(τ₁)
+		discrete_model = CairnsBlakeDowd2NN(τ₁)
 		#discrete_model = classicNN(τ₁; act=act)
 		#discrete_model = LocalGLMNetNN(τ₁)
 	elseif model_type == "LSTM"
@@ -940,7 +913,7 @@ begin
 		try
 			@time tstate, train_losses = main(tstate, ad_rule, (X_train, add_var_to_y(y_train)), n_epochs; early_stopping=false)
 		catch
-			@time tstate, train_losses = main(tstate, ad_rule, (X_train, reshape(add_var_to_y(y_train), :, 2)), n_epochs; early_stopping=false)
+			@time tstate, train_losses = main(tstate, ad_rule, (X_train, add_var_to_y(y_train)'), n_epochs; early_stopping=false)
 		end
 	else
 		@time tstate, train_losses = main(tstate, ad_rule, (X_train, y_train), n_epochs; early_stopping=false)
@@ -954,7 +927,7 @@ add_var_to_y(y_train)
 reshape(y_train, :, 1)
 
 # ╔═╡ b34c44fd-fed8-4111-984e-39e98bfe1481
-reshape(add_var_to_y(y_train), :, 2)
+reshape(add_var_to_y(y_train), 2, :)'
 
 # ╔═╡ 7096f53d-8f11-415d-b419-4c28917d6dc2
 X_train
@@ -1029,11 +1002,11 @@ end
 if model_type == "NN"
 	#BNN_arch = FNN(τ₀, τ₁, 1; depth=NN_depth, act=act, outer_act=identity)
 	#BNN_arch = GompertzNN(τ₁; act=act)
-	BNN_arch = LeeCarterNN(τ₁; act=act)
+	#BNN_arch = LeeCarterNN(τ₁; act=act)
 	#BNN_arch = SilerNN(τ₁; act=act)
 	#BNN_arch = HeligmanPollardNN(τ₁; act=act)
 	#BNN_arch = CairnsBlakeDowdNN(τ₁; act=act)
-	#BNN_arch = GMNN(τ₁; act=act)
+	BNN_arch = GMNN(τ₁; act=act)
 	#BNN_arch = CairnsBlakeDowd2NN(τ₁; act=act)
 	#BNN_arch = classicNN(τ₁; act=act)
 	#BNN_arch = LocalGLMNetNN(τ₁; act=act)
@@ -1046,9 +1019,9 @@ end
 
 # ╔═╡ 0711bfc1-4337-4ae4-a5b0-c7b08dae2190
 begin
-	N_samples = 1_000
+	N_samples = 50#1_500#1_500#1_000
 	half_N_samples = min(50, Int(N_samples/2))
-	N_chains = 2#4#1
+	N_chains = 4#2#4#1
 end
 
 # ╔═╡ 78baeae1-36cb-47a4-b82a-fba776e19635
@@ -1056,7 +1029,7 @@ function BNN(BNN_arch, N_samples)
 	ps_BNN, st_BNN = Lux.setup(Xoshiro(12345), BNN_arch) |> f64
 	ps_BNN = ps_BNN |> ComponentArray
 
-	#DNN_params = vcat(tstate.parameters...) |> f64
+	DNN_params = vcat(tstate.parameters...) |> f64
 
 	Nloglikelihood(y_, μ_, σ_) = loglikelihood(MvNormal(μ_, (σ_ .^ 2) .* I), y_)
 
@@ -1067,15 +1040,16 @@ function BNN(BNN_arch, N_samples)
 		#σ ~ truncated(Normal(0, 1); lower=1e-4)
 		#σ ~ truncated(Normal(0, 1); lower=0.25, upper=0.65)
 		#σ ~ InverseGamma(12, 5.5)
+		#sig ~ InverseGamma(2.0, 0.9)
 		α ~ Uniform(0.90, 1.0)
-		parameters ~ MvNormal(zeros(n_params), (sig^2) .* I)
+		#parameters ~ MvNormal(zeros(n_params), (sig^2) .* I)
 		#parameters ~ filldist(Laplace(0.0, (sig^2)), n_params)
-		#parameters ~ MvNormal(DNN_params, (sig^2) .* I)
+		parameters ~ MvNormal(DNN_params, (sig^2) .* I)
 		
 		## Forward NN to make predictions
 		log_μ_and_sigma, st_BNN = Lux.apply(BNN_arch, xs, vector_to_parameters(parameters .* α, ps_BNN), st_BNN)
-		μ = log_μ_and_sigma[1]
-		σ = sqrt.(exp.(log_μ_and_sigma[2]))
+		μ = log_μ_and_sigma[:, 1]
+		σ = sqrt.(exp.(log_μ_and_sigma[:, 2]))
 	
 		## Likelihood
 		#=
@@ -1089,7 +1063,7 @@ function BNN(BNN_arch, N_samples)
 	end
 
 	n_params = Lux.parameterlength(BNN_arch)
-	sig = 0.30#0.85#0.025
+	sig = 0.25#0.85#0.025
 
 	if model_type == "NN"
 		BNN_inference = bayes_nn(X_train |> f64, reshape(y_train, :, 1) |> f64, BNN_arch, ps_BNN, sig, n_params)
@@ -1143,13 +1117,13 @@ StatsPlots.plot(chains[half_N_samples:end, 1:75:end, :])
 describe(chains)
 
 # ╔═╡ c5f772b2-ab1d-4612-8d49-fcffea9772b7
-describe(chains)[1][3:end, :rhat] |> mean
+describe(chains)[1][2:end, :rhat] |> mean
 
 # ╔═╡ 930e4cb8-5374-465c-8288-493bfeb9c333
-describe(chains)[1][3:end, :ess_bulk] |> mean
+describe(chains)[1][2:end, :ess_bulk] |> mean
 
 # ╔═╡ f378bc31-9a5f-4cda-9754-929c4dc89b3d
-describe(chains)[1][3:end, :ess_per_sec] |> mean
+describe(chains)[1][2:end, :ess_per_sec] |> mean
 
 # ╔═╡ ca031860-7d8c-4cb0-8f00-c7e4bf232316
 gelmandiag(chains)[2:end, :psrf] |> mean
@@ -1198,8 +1172,8 @@ function predict(m, xs, chains, p_, st_, N_sims)
 
 	function fwd_pass(par, q)
 		res = (Lux.apply(m, xs |> f64, vector_to_parameters(par, p_) |> f64, st_test)[1])
-		res_μ = res[1]
-		res_σ² = exp.(res[2])
+		res_μ = res[:, 1]
+		res_σ² = exp.(res[:, 2])
 		return vec(rand(Xoshiro(1111+q), MvNormal(res_μ, I * res_σ²)))
 	end
 
@@ -1263,13 +1237,13 @@ end
 predict(tstate, X_train)
 
 # ╔═╡ c0047459-5f14-4af7-b541-8238763d4a70
-y_pred_valid = predict(tstate, Matrix(TEST[end_year .< TEST.Year .≤ forecast_year  .&& TEST[:, gender_] .< 0, ["Year_std", "Age_std"]])')
+y_pred_valid = predict(tstate, Matrix(TEST[end_year .< TEST.Year .≤ forecast_year  .&& TEST[:, gender_] .< 0, ["Year_std", "Age_std"]])')[:, 1]
 
 # ╔═╡ 7e8e62f5-28a1-4153-892a-fc8988130f4b
 mean((exp.(Matrix(TEST[end_year .< TEST.Year .≤ forecast_year .&& TEST[:, gender_] .< 0, [gender_]]) |> vec) .- exp.(y_pred_valid)) .^ 2) * 1e4
 
 # ╔═╡ f1f84de0-488a-4bad-a2a4-64965d493dc7
-y_pred_train = predict(tstate, Matrix(TEST[end_year .≥ TEST.Year .&& TEST[:, gender_] .< 0, ["Year_std", "Age_std"]])')
+y_pred_train = predict(tstate, Matrix(TEST[end_year .≥ TEST.Year .&& TEST[:, gender_] .< 0, ["Year_std", "Age_std"]])')[:, 1]
 
 # ╔═╡ c8bca677-24d5-4bcc-b881-e0f43f208ca9
 mean((exp.(Matrix(TEST[end_year .≥ TEST.Year .&& TEST[:, gender_] .< 0, [gender_]]) |> vec) .- exp.(y_pred_train)) .^ 2) * 1e4
@@ -1293,7 +1267,7 @@ begin
 	if model_type == "NN"
 		# Get first year of validation/test set
 		X_test_valid = Matrix(TEST[TEST.Year .== end_year, ["Year_std", "Age_std"]])'
-		#y_pred_test = predict(tstate, X_test_valid)
+		y_pred_test = predict(tstate, X_test_valid)[:, 1]
 		
 		#plot(title="Validation Set ($end_year): $(country)\n τ₁=$τ₁, act=$act, FNN, depth=$NN_depth", xlab="Age", ylab="log μ", legend=:topleft)#, ylim=(-12.0, 0.0))
 		plot(title="Validation Set ($end_year): $(country)\n Lee-Carter NN", xlab="Age", ylab="log μ", legend=:topleft)#, ylim=(-12.0, 0.0))
@@ -1305,7 +1279,7 @@ begin
 		@info "MAE Training Set: $(1 * mean(abs.(exp.(TEST[TEST.Year .≤ end_year .&& TEST[:, gender_]  .< 0, gender_]) .- exp.(predict(BNN_arch, Matrix(TEST[TEST.Year .≤ end_year .&& TEST[:, gender_]  .< 0, ["Year_std", "Age_std"]])', chains, ps_BNN, st_BNN, 1_000)[1]))))"
 		@info "MAE Testing Set: $(1 * mean(abs.(exp.(TEST[end_year .< TEST.Year .≤ forecast_year .&& TEST[:, gender_]  .< 0, gender_]) .- exp.(predict(BNN_arch, Matrix(TEST[end_year .< TEST.Year .≤ forecast_year .&& TEST[:, gender_]  .< 0, ["Year_std", "Age_std"]])', chains, ps_BNN, st_BNN, 1_000)[1]))))"
 		
-		#plot!(start_age:end_age, vec(y_pred_test), label="Predicted: ADAM", width=2, color=:blue)
+		plot!(start_age:end_age, vec(y_pred_test), label="Predicted: ADAM", width=2, color=:blue)
 		plot!(start_age:end_age, vec(median_pred), label="Predicted: BNN Median", width=2, color=:red)
 		plot!(start_age:end_age, lb_pred, fillrange=ub_pred, label="Predicted: BNN 95% CI", width=0.9, color=:red, alpha=0.2)
 		scatter!(TEST[TEST.Year .== end_year .&& TEST[:, gender_] .< 0, :Age], TEST[TEST.Year .== end_year .&& TEST[:, gender_] .< 0, gender_], label="Actual: Complete", color=:orange)
@@ -1361,7 +1335,7 @@ begin
 		scatter!(y_test[y_test.Year .== forecast_year_, :Age], y_test[y_test.Year .== forecast_year_, gender_], label="Actual", color=:orange)
 	else
 		X_test_forecast = Matrix(TEST[TEST.Year .== forecast_year_, ["Year_std", "Age_std"]])'
-		#y_pred_forecast = predict(tstate, X_test_forecast)
+		y_pred_forecast = predict(tstate, X_test_forecast)[:, 1]
 		
 		plot(title="Forecast (Year $forecast_year_): $(country)\n τ₁=$τ₁, act=$act, FNN, depth=$NN_depth", xlab="Age", ylab="log μ", legend=:best, ylim=(-12.0, 0.0))
 		plot(title="Year $forecast_year_: $(country)\n Lee-Carter NN, gender=$gender_", xlab="Age", ylab="log μ", legend=:best)#, ylim=(-12.0, 0.0))
@@ -1370,7 +1344,7 @@ begin
 
 		plot!(start_age:end_age, vec(median_forecast), label="Predicted: BNN Median", width=2, color=:red)
 		plot!(start_age:end_age, vec(lb_forecast), fillrange=vec(ub_forecast), label="Forecast: BNN 95% CI", color=:red, width=0.9, alpha=0.2)
-		#plot!(start_age:end_age, vec(y_pred_forecast), label="Predicted: $opt", width=2, color=:blue)
+		plot!(start_age:end_age, vec(y_pred_forecast), label="Predicted: $opt", width=2, color=:blue)
 		scatter!(TEST[TEST.Year .== forecast_year_ .&& TEST[:, gender_] .< 0, :Age], TEST[TEST.Year .== forecast_year_ .&& TEST[:, gender_] .< 0, gender_], label="Actual: Complete", color=:orange)
 		scatter!(TEST[TEST.Year .== forecast_year_ .&& TEST.Observed .== 1 .&& TEST[:, gender_]  .< 0, :Age], TEST[TEST.Year .== forecast_year_ .&& TEST.Observed .== 1 .&& TEST[:, gender_]  .< 0, gender_], label="Actual: Observed", color=:black)
 	end
@@ -1393,13 +1367,13 @@ begin
 		scatter!(y_test[y_test.Age .== forecast_age, :Year], y_test[y_test.Age .== forecast_age, :Female], label="Actual", color=:orange)
 	else
 		X_test_forecast_ = Matrix(TEST[TEST.Age .== forecast_age, ["Year_std", "Age_std"]])'
-		#y_pred_forecast_ = predict(tstate, X_test_forecast_)
+		y_pred_forecast_ = predict(tstate, X_test_forecast_)[:, 1]
 		
 		plot(title="Forecast for Age $forecast_age: $(country)\n Lee-Carter NN", xlab="Year", ylab="log μ", legend=:best)
 		
 		median_forecast2, lb_forecast2, ub_forecast2 = predict(BNN_arch, X_test_forecast_, chains, ps_BNN, st_BNN, 1_000)
 
-		#plot!(max(start_year, TEST.Year[1]):extended_forecast_year, y_pred_forecast_, label="Forecast: $opt", color=:blue, width=2)
+		plot!(max(start_year, TEST.Year[1]):extended_forecast_year, y_pred_forecast_, label="Forecast: $opt", color=:blue, width=2)
 		plot!(max(start_year, TEST.Year[1]):extended_forecast_year, median_forecast2, label="Forecast: BNN Median", color=:red, width=2)
 		plot!(max(start_year, TEST.Year[1]):extended_forecast_year, lb_forecast2, fillrange=ub_forecast2, label="Forecast: BNN 95% CI", color=:red, width=0.9, alpha=0.2)
 		scatter!(TEST[TEST.Age .== forecast_age .&& TEST[:, gender_]  .< 0, :Year], TEST[TEST.Age .== forecast_age .&& TEST[:, gender_]  .< 0, gender_], label="Actual: Complete", color=:orange)
@@ -1604,9 +1578,6 @@ end
 # ╠═d12da7dd-e186-4329-939e-92cd8702f2e6
 # ╠═564d77df-85c1-406a-8964-3b14fca6328c
 # ╠═271f155f-9486-4146-9a74-2a3df97e8df4
-# ╠═4ccfe2d4-2c02-41a4-bd6e-547827afd5e5
-# ╠═2474f166-64e3-43ac-98ce-17d367d89bd2
-# ╠═35b49e8b-ce5c-43b0-a203-f945de974bb2
 # ╠═1b83a76d-2587-4e3c-a000-901a5a165716
 # ╠═b7d6736b-776e-49d1-ae18-4a64b07a1a24
 # ╠═864a7e7f-d4e3-4ada-b81a-61d5574c7138
